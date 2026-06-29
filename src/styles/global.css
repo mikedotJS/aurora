@@ -1,0 +1,51 @@
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  /* transparent so the rounded app shell shows the desktop at the corners */
+  background: transparent;
+  color: var(--fg);
+  font-family: var(--mono);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+input,
+select {
+  font: inherit;
+}
+
+/* The xterm canvas/viewport inside an Aurora pane. */
+.aurora-term {
+  height: 100%;
+  width: 100%;
+}
+.aurora-term .xterm {
+  height: 100%;
+  padding: 6px 4px 6px 12px;
+}
+.aurora-term .xterm-viewport::-webkit-scrollbar {
+  width: 9px;
+}
+.aurora-term .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 9px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.aurora-term .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Hardened Runtime entitlements for a notarized Developer ID build.
+	     Aurora is NOT sandboxed (it spawns the user's real shell via a PTY and
+	     shells out to git/glab), so no App Sandbox key is present. The JIT keys
+	     below keep the embedded WebKit view stable under hardened runtime. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>
