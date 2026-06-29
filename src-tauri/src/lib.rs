@@ -7,6 +7,7 @@ mod sys;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(pty::PtyManager::default())
@@ -17,6 +18,8 @@ pub fn run() {
             pty::pty_kill,
             sys::list_dir,
             sys::git_branch,
+            sys::git_branches,
+            sys::git_switch,
             sys::git_root,
             sys::home_dir,
             claude::key_set,

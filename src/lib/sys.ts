@@ -11,12 +11,30 @@ export function homeDir(): Promise<string> {
   return invoke("home_dir");
 }
 
-export function listDir(path: string): Promise<DirEntry[]> {
-  return invoke<DirEntry[]>("list_dir", { path }).catch(() => []);
+export function listDir(path: string, includeHidden = false): Promise<DirEntry[]> {
+  return invoke<DirEntry[]>("list_dir", { path, includeHidden }).catch(() => []);
 }
 
 export function gitBranch(cwd: string): Promise<string | null> {
   return invoke<string | null>("git_branch", { cwd }).catch(() => null);
+}
+
+export interface BranchList {
+  current: string | null;
+  branches: string[];
+}
+
+export function gitBranches(cwd: string): Promise<BranchList> {
+  return invoke<BranchList>("git_branches", { cwd }).catch(() => ({ current: null, branches: [] }));
+}
+
+export type SwitchResult = { ok: true } | { ok: false; error: string };
+
+/** Switch to a local branch; resolves with the git error message on failure. */
+export function gitSwitch(cwd: string, branch: string): Promise<SwitchResult> {
+  return invoke<null>("git_switch", { cwd, branch })
+    .then(() => ({ ok: true }) as SwitchResult)
+    .catch((e) => ({ ok: false, error: String(e) }) as SwitchResult);
 }
 
 export function gitRoot(cwd: string): Promise<string | null> {

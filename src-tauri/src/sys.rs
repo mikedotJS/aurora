@@ -95,15 +95,17 @@ pub fn expand_tilde(p: &str) -> String {
     p.to_string()
 }
 
-/// List a directory (non-hidden entries) for ghost autocomplete.
+/// List a directory for ghost autocomplete / folder completion. Hidden
+/// (dot-prefixed) entries are skipped unless `include_hidden` is set.
 #[tauri::command]
-pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+pub fn list_dir(path: String, include_hidden: Option<bool>) -> Result<Vec<DirEntry>, String> {
+    let show_hidden = include_hidden.unwrap_or(false);
     let target = expand_tilde(&path);
     let mut out = Vec::new();
     let read = std::fs::read_dir(&target).map_err(|e| e.to_string())?;
     for entry in read.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with('.') {
+        if !show_hidden && name.starts_with('.') {
             continue;
         }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -132,6 +134,59 @@ pub fn git_branch(cwd: String) -> Option<String> {
         None
     } else {
         Some(branch)
+    }
+}
+
+#[derive(Serialize)]
+pub struct BranchList {
+    /// The checked-out branch (`None` in detached HEAD or a non-repo).
+    pub current: Option<String>,
+    /// Local branches, most-recently-committed first.
+    pub branches: Vec<String>,
+}
+
+/// Local git branches for the branch switcher, ordered by most recent commit so
+/// the branches you actually move between surface first.
+#[tauri::command]
+pub fn git_branches(cwd: String) -> Result<BranchList, String> {
+    let dir = expand_tilde(&cwd);
+    let output = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=-committerdate",
+            "refs/heads",
+        ])
+        .current_dir(&dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(BranchList {
+        current: git_branch(cwd),
+        branches,
+    })
+}
+
+/// Switch the working tree to an existing local branch. On failure (e.g. a dirty
+/// tree) the git error is returned so the UI can explain what to do.
+#[tauri::command]
+pub fn git_switch(cwd: String, branch: String) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(["switch", &branch])
+        .current_dir(expand_tilde(&cwd))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
     }
 }
 

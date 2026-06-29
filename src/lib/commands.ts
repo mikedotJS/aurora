@@ -2,6 +2,8 @@
 // ghost autocomplete, and the heuristic that decides when a line is natural
 // language worth sending to Claude. Ported/extended from the Aurora mockup.
 
+import type { DirEntry } from "./sys";
+
 export const KNOWN_COMMANDS = [
   "ls", "pwd", "cd", "cat", "echo", "clear", "cls", "help", "git", "npm", "pnpm",
   "bun", "yarn", "code", "rm", "mkdir", "rmdir", "whoami", "date", "rg", "grep",
@@ -129,6 +131,51 @@ function historyGhost(input: string, history: string[]): string {
     if (h.startsWith(input) && h !== input) return h.slice(input.length);
   }
   return "";
+}
+
+export interface PathToken {
+  /** Index in the input where the path token begins. */
+  tokenStart: number;
+  /** Literal directory prefix as typed (incl. trailing `/`); `""` means the cwd. */
+  dir: string;
+  /** The leaf prefix to match against directory entries. */
+  leaf: string;
+  /** Whether the token is a path argument worth folder-completing. */
+  isPathArg: boolean;
+}
+
+/**
+ * Split the path token at the caret (defaults to end of input) into a directory
+ * prefix + a leaf to match, for Tab folder completion. A token is treated as a
+ * path argument when it isn't the bare command word, or when it looks path-like
+ * (`/`, `~`, or a leading `.`).
+ */
+export function splitPathToken(input: string, caretPos: number = input.length): PathToken {
+  const upto = input.slice(0, caretPos);
+  const token = /(\S*)$/.exec(upto)?.[1] ?? "";
+  const tokenStart = caretPos - token.length;
+  const slash = token.lastIndexOf("/");
+  const dir = slash === -1 ? "" : token.slice(0, slash + 1);
+  const leaf = slash === -1 ? token : token.slice(slash + 1);
+  const hasPrecedingWord = /\S\s+\S*$/.test(upto);
+  const looksPathy = token.includes("/") || token.startsWith("~") || token.startsWith(".");
+  return { tokenStart, dir, leaf, isPathArg: hasPrecedingWord || looksPathy };
+}
+
+/** Directory entries (folders only) whose name starts with the leaf prefix. */
+export function folderCandidates(entries: DirEntry[], leaf: string): DirEntry[] {
+  return entries.filter((e) => e.is_dir && e.name.startsWith(leaf));
+}
+
+/** Longest common prefix shared by all names (`""` when they diverge at the start). */
+export function commonPrefix(names: string[]): string {
+  if (!names.length) return "";
+  let pre = names[0];
+  for (const n of names) {
+    while (pre && !n.startsWith(pre)) pre = pre.slice(0, -1);
+    if (!pre) break;
+  }
+  return pre;
 }
 
 /**

@@ -4,6 +4,7 @@
 import { useStore, activePane } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 import { scriptsForRoot } from "../lib/scripts";
+import { BranchChip } from "./BranchSwitcher";
 
 export function StatusBar() {
   const home = useStore((s) => s.home);
@@ -40,12 +41,9 @@ export function StatusBar() {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
         <span style={{ color: "var(--dim)" }}>{cwd}</span>
-        {branch && (
+        {branch && pane && (
           <>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ color: "var(--acd)" }}>⎇</span>
-              {branch}
-            </span>
+            <BranchChip paneId={pane.id} cwd={pane.cwd} branch={branch} />
             <span
               onClick={() => openPanel("mr")}
               title="show open merge requests"

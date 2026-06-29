@@ -276,6 +276,10 @@ export function Pane({ pane, index, isActive, multiple }: Props) {
             </div>
           )}
 
+          {isActive && pane.completion && (
+            <CompletionList items={pane.completion.items} index={pane.completion.index} />
+          )}
+
           {showKeyEntry && <KeyEntry input={pane.input} keyError={keyError} />}
         </div>
 
@@ -424,6 +428,95 @@ function HookCard({
       >
         ×
       </span>
+    </div>
+  );
+}
+
+const COMPLETION_LIMIT = 8;
+
+function CompletionList({ items, index }: { items: { name: string; is_dir: boolean }[]; index: number }) {
+  // Keep the highlighted row in view when the list overflows the cap.
+  const start = Math.min(Math.max(0, index - COMPLETION_LIMIT + 1), Math.max(0, items.length - COMPLETION_LIMIT));
+  const shown = items.slice(start, start + COMPLETION_LIMIT);
+  const hiddenAfter = items.length - (start + shown.length);
+  return (
+    <div
+      style={{
+        margin: "2px 0 10px",
+        border: "1px solid color-mix(in oklab, var(--ac) 32%, var(--line))",
+        borderLeft: "2px solid var(--ac)",
+        borderRadius: 8,
+        background: "color-mix(in oklab, var(--ac) 8%, transparent)",
+        padding: "8px 6px 6px",
+        animation: "rise .13s ease",
+        boxShadow: "0 8px 30px -16px color-mix(in oklab, var(--ac) 80%, transparent)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          fontFamily: "var(--sans)",
+          fontSize: 11,
+          letterSpacing: ".04em",
+          color: "var(--acd)",
+          textTransform: "uppercase",
+          margin: "0 8px 6px",
+        }}
+      >
+        <span style={{ color: "var(--ac)" }}>⇥</span>folders
+        <span style={{ color: "var(--faint)" }}>· {items.length}</span>
+      </div>
+      {start > 0 && (
+        <div style={{ padding: "0 10px 2px", fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>↑ {start} more…</div>
+      )}
+      {shown.map((it, i) => {
+        const active = start + i === index;
+        return (
+          <div
+            key={it.name}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "3px 10px",
+              borderRadius: 6,
+              fontSize: 14,
+              color: active ? "var(--fg)" : "var(--dim)",
+              background: active ? "color-mix(in oklab, var(--ac) 18%, transparent)" : undefined,
+            }}
+          >
+            <span>
+              {it.name}
+              <span style={{ color: "var(--faint)" }}>/</span>
+            </span>
+          </div>
+        );
+      })}
+      {hiddenAfter > 0 && (
+        <div style={{ padding: "2px 10px 0", fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>↓ {hiddenAfter} more…</div>
+      )}
+      <div
+        style={{
+          margin: "7px 8px 0",
+          fontFamily: "var(--sans)",
+          fontSize: 11,
+          color: "var(--faint)",
+          display: "flex",
+          gap: 16,
+        }}
+      >
+        <span>
+          <span style={{ color: "var(--acd)" }}>↑↓</span> move
+        </span>
+        <span>
+          <span style={{ color: "var(--acd)" }}>⇥/↵</span> select
+        </span>
+        <span>
+          <span style={{ color: "var(--acd)" }}>esc</span> dismiss
+        </span>
+      </div>
     </div>
   );
 }

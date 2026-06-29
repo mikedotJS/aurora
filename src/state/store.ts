@@ -6,6 +6,16 @@ import type { AccentKey, FontKey } from "../lib/theme";
 import { applyTheme } from "../lib/theme";
 import type { Suggestion } from "../ai/suggest";
 import { ghostFor } from "../lib/commands";
+import type { DirEntry } from "../lib/sys";
+
+/** Open Tab folder-completion list anchored on a path token in the prompt. */
+export interface Completion {
+  items: DirEntry[];
+  index: number;
+  /** Where the path token starts, and its literal dir prefix — for rebuilding the input on accept. */
+  tokenStart: number;
+  dir: string;
+}
 
 export interface Settings {
   model: string;
@@ -92,6 +102,7 @@ export interface PaneState {
   suggestion: Suggestion | null;
   suggestionLoading: boolean;
   pendingFix: string | null;
+  completion: Completion | null;
   inputSelected: boolean;
   rawMode: boolean;
   exited: boolean;
@@ -164,6 +175,10 @@ export interface StoreState {
   setSuggestion: (paneId: number, s: Suggestion | null) => void;
   setSuggestionLoading: (paneId: number, v: boolean) => void;
   setPendingFix: (paneId: number, fix: string | null) => void;
+  openCompletion: (paneId: number, c: Omit<Completion, "index">) => void;
+  moveCompletion: (paneId: number, delta: number) => void;
+  acceptCompletion: (paneId: number) => void;
+  closeCompletion: (paneId: number) => void;
   selectAllInput: (paneId: number) => void;
   collapseInputSelection: (paneId: number) => void;
   setRawMode: (paneId: number, v: boolean) => void;
@@ -222,6 +237,7 @@ function newPane(cwd: string): PaneState {
     suggestion: null,
     suggestionLoading: false,
     pendingFix: null,
+    completion: null,
     inputSelected: false,
     rawMode: false,
     exited: false,
@@ -386,7 +402,7 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({
       tabs: patchPane(s.tabs, paneId, (p) => {
         const next = { ...p, input: value, hIndex: -1, suggestion: null, pendingFix: null };
-        return { input: value, hIndex: -1, suggestion: null, pendingFix: null, inputSelected: false, ghost: recomputeGhost(next, s.settings.ghost) };
+        return { input: value, hIndex: -1, suggestion: null, pendingFix: null, completion: null, inputSelected: false, ghost: recomputeGhost(next, s.settings.ghost) };
       }),
     })),
 
@@ -469,20 +485,45 @@ export const useStore = create<StoreState>((set, get) => ({
         else {
           if (i === -1) return {};
           i = i + 1;
-          if (i >= h.length) return { hIndex: -1, input: "", ghost: "", suggestion: null };
+          if (i >= h.length) return { hIndex: -1, input: "", ghost: "", suggestion: null, completion: null };
         }
-        return { hIndex: i, input: h[i], ghost: "", suggestion: null };
+        return { hIndex: i, input: h[i], ghost: "", suggestion: null, completion: null };
       }),
     })),
 
   setSuggestion: (paneId, sug) =>
-    set((s) => ({ tabs: patchPane(s.tabs, paneId, { suggestion: sug, suggestionLoading: false, ghost: "" }) })),
+    set((s) => ({ tabs: patchPane(s.tabs, paneId, { suggestion: sug, suggestionLoading: false, ghost: "", completion: null }) })),
 
   setSuggestionLoading: (paneId, v) =>
     set((s) => ({ tabs: patchPane(s.tabs, paneId, { suggestionLoading: v }) })),
 
   setPendingFix: (paneId, fix) =>
-    set((s) => ({ tabs: patchPane(s.tabs, paneId, { pendingFix: fix }) })),
+    set((s) => ({ tabs: patchPane(s.tabs, paneId, { pendingFix: fix, completion: null }) })),
+
+  openCompletion: (paneId, c) =>
+    set((s) => ({ tabs: patchPane(s.tabs, paneId, { completion: { ...c, index: 0 } }) })),
+
+  moveCompletion: (paneId, delta) =>
+    set((s) => ({
+      tabs: patchPane(s.tabs, paneId, (p) => {
+        const c = p.completion;
+        if (!c || !c.items.length) return {};
+        return { completion: { ...c, index: (c.index + delta + c.items.length) % c.items.length } };
+      }),
+    })),
+
+  acceptCompletion: (paneId) =>
+    set((s) => ({
+      tabs: patchPane(s.tabs, paneId, (p) => {
+        const c = p.completion;
+        if (!c || !c.items.length) return {};
+        const input = p.input.slice(0, c.tokenStart) + c.dir + c.items[c.index].name + "/";
+        return { input, completion: null, suggestion: null, ghost: recomputeGhost({ ...p, input, suggestion: null }, s.settings.ghost) };
+      }),
+    })),
+
+  closeCompletion: (paneId) =>
+    set((s) => ({ tabs: patchPane(s.tabs, paneId, { completion: null }) })),
 
   selectAllInput: (paneId) =>
     set((s) => ({ tabs: patchPane(s.tabs, paneId, (p) => (p.input ? { inputSelected: true } : {})) })),

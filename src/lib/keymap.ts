@@ -5,10 +5,11 @@
 import { useStore, activePane, type PaneState } from "../state/store";
 import { pty } from "../term/pty";
 import { claudeSuggest, NoKeyError } from "../ai/suggest";
-import { typoFix, isInteractive } from "./commands";
+import { typoFix, isInteractive, splitPathToken, folderCandidates, commonPrefix, type PathToken } from "./commands";
 import { keySet, keyDelete } from "./keychain";
-import { resolveCd } from "./sys";
+import { resolveCd, listDir } from "./sys";
 import { runScript } from "./scripts";
+import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 function focusRoot() {
   document.getElementById("aurora-root")?.focus();
@@ -17,7 +18,9 @@ function focusRoot() {
 async function pasteClipboard() {
   let text: string;
   try {
-    text = (await navigator.clipboard.readText()) || "";
+    // Read via the native pasteboard (Rust) rather than the Web Clipboard API,
+    // which on macOS WKWebView pops up a "Paste" confirmation button.
+    text = (await readText()) || "";
   } catch {
     return;
   }
@@ -149,6 +152,48 @@ function submit(pane: PaneState, value: string) {
   runInShell(pane, trimmed);
 }
 
+/** Resolve a token's typed dir prefix to a path to read (cwd-relative, `~`, or absolute). */
+function completionBase(cwd: string, dir: string): string {
+  if (!dir) return cwd;
+  if (dir.startsWith("~") || dir.startsWith("/")) return dir; // Rust expands `~`
+  return cwd.replace(/\/+$/, "") + "/" + dir;
+}
+
+/**
+ * Tab folder completion for a path token: read the relevant directory and either
+ * complete inline (1 match), complete the common prefix then open a selectable
+ * list (many), or do nothing (none — falling back to an existing ghost). Async,
+ * so it re-reads the pane and bails if the input changed while reading.
+ */
+async function triggerFolderCompletion(pane: PaneState, tok: PathToken) {
+  const s = useStore.getState();
+  const entries = await listDir(completionBase(pane.cwd, tok.dir), tok.leaf.startsWith("."));
+
+  // Freshness guard: drop the result if the user kept typing.
+  let cur: PaneState | undefined;
+  for (const g of useStore.getState().tabs) {
+    const p = g.panes.find((pp) => pp.id === pane.id);
+    if (p) { cur = p; break; }
+  }
+  if (!cur || cur.input !== pane.input) return;
+
+  const matches = folderCandidates(entries, tok.leaf);
+  if (matches.length === 0) {
+    if (cur.ghost) s.setInput(pane.id, cur.input + cur.ghost); // nothing to list — honor a ghost
+    return;
+  }
+  if (matches.length === 1) {
+    s.setInput(pane.id, cur.input.slice(0, tok.tokenStart) + tok.dir + matches[0].name + "/");
+    return;
+  }
+  // Many: extend to the longest shared prefix, then list the candidates.
+  const cp = commonPrefix(matches.map((m) => m.name));
+  if (cp.length > tok.leaf.length) {
+    s.setInput(pane.id, cur.input.slice(0, tok.tokenStart) + tok.dir + cp);
+  }
+  s.openCompletion(pane.id, { items: matches, tokenStart: tok.tokenStart, dir: tok.dir });
+}
+
 export function handleKeyDown(e: KeyboardEvent) {
   const s = useStore.getState();
   const g = s.tabs[s.active];
@@ -207,7 +252,7 @@ export function handleKeyDown(e: KeyboardEvent) {
   }
   if (e.metaKey && (k === "c" || k === "C") && pane.inputSelected && pane.input) {
     e.preventDefault();
-    void navigator.clipboard.writeText(pane.input).catch(() => {});
+    void writeText(pane.input).catch(() => {});
     return;
   }
   if (e.metaKey) {
@@ -287,6 +332,15 @@ export function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
+  // Folder-completion list is open: it owns navigation/accept/dismiss. Any other
+  // key (typing, Backspace) falls through; setInput then clears the list.
+  if (pane.completion) {
+    if (k === "ArrowDown") return void (e.preventDefault(), s.moveCompletion(pane.id, 1));
+    if (k === "ArrowUp") return void (e.preventDefault(), s.moveCompletion(pane.id, -1));
+    if (k === "Tab" || k === "Enter") return void (e.preventDefault(), s.acceptCompletion(pane.id));
+    if (k === "Escape") return void (e.preventDefault(), s.closeCompletion(pane.id));
+  }
+
   // With the whole input selected (⌘A), editing keys act on the selection like
   // a real text field. Enter falls through to submit (setInput clears the flag).
   if (pane.inputSelected) {
@@ -309,9 +363,16 @@ export function handleKeyDown(e: KeyboardEvent) {
     if (pane.pendingFix) {
       s.setInput(pane.id, pane.pendingFix);
       s.setPendingFix(pane.id, null);
-    } else if (pane.ghost) {
-      s.setInput(pane.id, pane.input + pane.ghost);
+      return;
     }
+    // On a path argument, complete folders (lists even when no ghost exists);
+    // otherwise keep the existing command/subcommand ghost-accept behavior.
+    const tok = splitPathToken(pane.input);
+    if (tok.isPathArg) {
+      void triggerFolderCompletion(pane, tok);
+      return;
+    }
+    if (pane.ghost) s.setInput(pane.id, pane.input + pane.ghost);
     return;
   }
   if (k === "ArrowRight") {

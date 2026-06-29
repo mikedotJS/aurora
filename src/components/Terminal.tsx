@@ -7,6 +7,7 @@
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { pty } from "../term/pty";
 import { useStore, type PaneState, type StoreApiState } from "../state/store";
 
@@ -95,6 +96,20 @@ export function Terminal({ paneId }: { paneId: number }) {
     term.onData((d) => {
       if (ptyIdRef.current) pty.write(ptyIdRef.current, d);
     });
+
+    // Paste while a full-screen program owns the pane. xterm's default paste
+    // would read the clipboard via the Web Clipboard API, which on macOS pops up
+    // a "Paste" confirmation button. Intercept it (capture, so we beat xterm's
+    // own textarea handler), read the native pasteboard, and feed xterm via
+    // paste() so the app's bracketed-paste mode is still respected.
+    const container = ref.current;
+    const onPaste = (ev: ClipboardEvent) => {
+      if (!(findPane(useStore.getState(), paneId)?.rawMode)) return; // blocks-mode paste is the global keymap's job
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      void readText().then((t) => t && term.paste(t)).catch(() => {});
+    };
+    container?.addEventListener("paste", onPaste, true);
 
     const flush = () => {
       if (rafRef.current != null) {
@@ -279,6 +294,7 @@ export function Terminal({ paneId }: { paneId: number }) {
       if (initTimer) clearTimeout(initTimer);
       if (promptTimerRef.current != null) clearTimeout(promptTimerRef.current);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
+      container?.removeEventListener("paste", onPaste, true);
       ro.disconnect();
       if (ptyIdRef.current) pty.kill(ptyIdRef.current);
       term.dispose();
