@@ -2,10 +2,12 @@
 // into a split group), split badges, and new-tab / split buttons.
 
 import { useRef, useState } from "react";
-import { useStore, type Group } from "../state/store";
+import { useStore, activeWorkspace, type Group } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 
 function tabTitle(g: Group, home: string): string {
+  const named = g.name?.trim();
+  if (named) return named; // auto-set from the running command (auto-rename-tabs)
   const pane = g.panes[g.active] ?? g.panes[0];
   const short = shortenCwd(pane?.cwd ?? "", home);
   const seg = short.split("/").filter(Boolean).pop();
@@ -13,8 +15,8 @@ function tabTitle(g: Group, home: string): string {
 }
 
 export function TabStrip() {
-  const tabs = useStore((s) => s.tabs);
-  const active = useStore((s) => s.active);
+  const tabs = useStore((s) => activeWorkspace(s)?.tabs ?? []);
+  const active = useStore((s) => activeWorkspace(s)?.active ?? 0);
   const home = useStore((s) => s.home);
   const selectTab = useStore((s) => s.selectTab);
   const closeTab = useStore((s) => s.closeTab);

@@ -5,6 +5,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Terminal } from "./Terminal";
 import { FindBar } from "./FindBar";
+import { ChangesView } from "./ChangesView";
 import { useStore, type PaneState, type Block } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 import { blockLines, collectMatches, findRangesInLine, highlightLine, lineText, type Match } from "../lib/find";
@@ -173,6 +174,7 @@ export function Pane({ pane, index, isActive, multiple }: Props) {
       )}
 
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        {pane.view === "changes" && !pane.rawMode && <ChangesView paneId={pane.id} />}
         {isActive && find.open && !pane.rawMode && <FindBar total={matches.length} index={curIdx} />}
         {/* scrollback: blocks + live prompt */}
         <div

@@ -3,7 +3,9 @@
 // count). Degrades silently when glab is missing or a repo isn't on GitLab.
 
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, type GitlabMr } from "../state/store";
+import { useStore, allRepoRoots, type GitlabMr } from "../state/store";
+import { getRepoConfig } from "./repoConfig";
+import { jiraAddRemoteLink, jiraTransition, repoJira } from "./jira";
 
 type Snap = Map<number, { updated: string; draft: boolean }>;
 
@@ -15,9 +17,7 @@ const AC = "oklch(0.83 0.115 184)";
 const INFO = "oklch(0.72 0.1 255)";
 
 function visitedRoots(): string[] {
-  const roots = new Set<string>();
-  for (const g of useStore.getState().tabs) for (const p of g.panes) if (p.repoRoot) roots.add(p.repoRoot);
-  return [...roots];
+  return [...allRepoRoots(useStore.getState())];
 }
 
 async function pollRepo(root: string) {
@@ -31,6 +31,7 @@ async function pollRepo(root: string) {
   }
   const st = useStore.getState();
   st.setRepoMrs(root, mrs);
+  syncJiraForRepo(root, mrs);
 
   const repo = root.split("/").filter(Boolean).pop() || root;
   const prev = snapshots.get(root);
@@ -53,6 +54,46 @@ async function pollRepo(root: string) {
 
 async function pollAll() {
   for (const root of visitedRoots()) await pollRepo(root);
+}
+
+/**
+ * Two-way Jira sync driven by MR state. For each synced workspace in `root`:
+ *  - an MR appears for its branch → post the MR link to the issue once (upserted
+ *    server-side by globalId) and record it on the workspace;
+ *  - a previously-open MR disappears from the open list → treat as merged and
+ *    transition the issue toward its Done status (once).
+ * Best-effort: Jira being down never blocks git/MR work. `glab mr list` only
+ * returns open MRs, so "gone" is the merge signal.
+ */
+function syncJiraForRepo(root: string, mrs: GitlabMr[]): void {
+  const st = useStore.getState();
+  const jira = repoJira(root);
+  if (!jira) return;
+
+  const doneName = getRepoConfig(root).integrations.jiraDone || "Done";
+  const byBranch = new Map<string, GitlabMr>();
+  for (const mr of mrs) if (mr.branch) byBranch.set(mr.branch, mr);
+
+  for (const w of st.workspaces) {
+    if (w.repoId !== root || !w.jiraSync || !w.issueKey || !w.branch) continue;
+    const mr = byBranch.get(w.branch);
+
+    if (mr) {
+      // MR open for this branch — post the link once (guard on the recorded iid).
+      if (!w.mr || w.mr.iid !== mr.iid) {
+        st.setWsMr(w.id, { iid: mr.iid, state: mr.draft ? "draft" : "open", url: mr.web_url });
+        void jiraAddRemoteLink(jira.connId, jira.site, jira.email, w.issueKey, mr.web_url, mr.title);
+      }
+    } else if (w.mr && w.mr.state !== "merged") {
+      // A previously-open MR is gone from the open list → merged.
+      st.setWsMr(w.id, { ...w.mr, state: "merged" });
+      const key = w.issueKey;
+      const wsId = w.id;
+      void jiraTransition(jira.connId, jira.site, jira.email, key, doneName).then((r) => {
+        if (r.ok) useStore.getState().setWsJiraStatus(wsId, doneName);
+      });
+    }
+  }
 }
 
 export function startNotificationPoller() {

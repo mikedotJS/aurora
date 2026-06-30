@@ -36,13 +36,19 @@ function GroupGrid({ group, visible }: { group: Group; visible: boolean }) {
 }
 
 export function PaneArea() {
-  const tabs = useStore((s) => s.tabs);
-  const active = useStore((s) => s.active);
+  // Render every workspace's groups so background PTYs stay alive across a
+  // workspace switch; only the active workspace's active tab is visible.
+  const workspaces = useStore((s) => s.workspaces);
+  const activeWs = useStore((s) => s.activeWs);
   return (
     <div style={{ flex: 1, minHeight: 0, position: "relative", background: "var(--page)" }}>
-      {tabs.map((group, gi) => (
-        <GroupGrid key={group.id} group={group} visible={gi === active} />
-      ))}
+      {workspaces
+        .filter((w) => w.mounted)
+        .flatMap((w) =>
+          w.tabs.map((group, gi) => (
+            <GroupGrid key={group.id} group={group} visible={w.id === activeWs && gi === w.active} />
+          )),
+        )}
     </div>
   );
 }

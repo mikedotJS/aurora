@@ -87,3 +87,24 @@ pub fn glab_current_user(cwd: String) -> Result<String, String> {
         .map(|s| s.to_string())
         .ok_or_else(|| "glab: no username in response".to_string())
 }
+
+/// Open the GitLab "create merge request" page in the browser for `branch`
+/// (`glab mr create --web --fill`). The Changes view's "Open MR" handoff uses
+/// this when no MR exists yet; an existing MR is opened directly by its URL.
+///
+/// Returns `Err("glab-not-found")` when the CLI is missing so the UI can degrade.
+#[tauri::command]
+pub fn glab_mr_create(cwd: String, branch: String) -> Result<(), String> {
+    let glab = crate::sys::resolve_bin("glab").ok_or_else(|| "glab-not-found".to_string())?;
+    let output = std::process::Command::new(&glab)
+        .args(["mr", "create", "--web", "--fill", "--source-branch", &branch])
+        .current_dir(crate::sys::expand_tilde(&cwd))
+        .env("PATH", crate::sys::user_path())
+        .output()
+        .map_err(|_| "glab-not-found".to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!("glab: {}", String::from_utf8_lossy(&output.stderr).trim()))
+    }
+}

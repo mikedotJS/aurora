@@ -1,0 +1,14 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+# Aurora is a Tauri 2 desktop app: Bun-managed React/Vite frontend + Rust backend.
+[scripts]
+# Install JS deps (Bun) and pre-fetch Rust crates so the first `tauri dev` is fast.
+setup = "bun install && (cd src-tauri && cargo fetch)"
+
+# Launch the native app (real shell). `bun tauri dev` runs the Vite dev server
+# and the Tauri/Rust window together.
+run = "bun tauri dev"
+
+# The Vite dev server is pinned to port 1420 (strictPort) and Tauri's devUrl
+# points at localhost:1420, so only one workspace can run the app at a time.
+run_mode = "nonconcurrent"

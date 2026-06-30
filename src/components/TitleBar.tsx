@@ -2,7 +2,8 @@
 // title, connection dot + gear.
 
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useStore } from "../state/store";
+import { useStore, activeWorkspace } from "../state/store";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 const appWindow = getCurrentWindow();
 
@@ -10,6 +11,8 @@ export function TitleBar() {
   const apiKeyPresent = useStore((s) => s.apiKeyPresent);
   const startKeyEntry = useStore((s) => s.startKeyEntry);
   const openSettings = useStore((s) => s.openSettings);
+  const railCollapsed = useStore((s) => s.railCollapsed);
+  const branch = useStore((s) => activeWorkspace(s)?.branch ?? null);
 
   return (
     <div
@@ -58,14 +61,19 @@ export function TitleBar() {
           letterSpacing: ".02em",
           display: "flex",
           alignItems: "center",
+          justifyContent: "center",
           gap: 8,
         }}
       >
-        <span>aurora</span>
-        <span style={{ color: "var(--faint)" }}>—</span>
-        <span>zsh</span>
-        <span style={{ color: "var(--faint)" }}>—</span>
-        <span style={{ color: "var(--acd)" }}>✦ claude</span>
+        {railCollapsed ? (
+          <WorkspaceSwitcher />
+        ) : (
+          <>
+            <span>aurora</span>
+            <span style={{ color: "var(--faint)" }}>—</span>
+            <span style={{ color: branch ? "var(--acd)" : undefined }}>{branch ? `⎇ ${branch}` : "zsh"}</span>
+          </>
+        )}
       </div>
 
       <div

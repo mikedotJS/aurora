@@ -1,0 +1,113 @@
+flowchart TD
+  start(["J'ai une tâche à faire"]) --> hasRepo{"Le repo est<br/>déjà dans Aurora ?"}
+  hasRepo -->|non| repos
+  hasRepo -->|oui| create
+
+  subgraph repos["0 · Repos"]
+    direction TB
+    add["Ajouter un repo"] --> src{"Local ou distant ?"}
+    src -->|"dossier local"| openFolder["Ouvrir un dossier git"]
+    src -->|"distant"| clone["Cloner depuis une URL<br/>(GitHub / GitLab)"]
+    openFolder --> tracked
+    clone --> tracked
+    tracked(["Repo dans Aurora<br/>sa lane apparaît"])
+    tracked --> connect["(option) Connecter Jira / GitLab"]
+    tracked --> repoCfg["(option) Réglages repo<br/>branche par défaut · script de démarrage"]
+    tracked --> manage["Gérer / retirer le repo<br/>(ne supprime pas les fichiers)"]
+  end
+  repos --> create
+  connect -.->|"débloque l'option issue"| create
+
+  subgraph create["1 · Ouvrir un workspace — ⊕ UNIFY (un seul chemin)"]
+    direction TB
+    pick["Sur quoi je travaille ?"] --> kind["• nouvelle branche<br/>• branche existante<br/>• depuis une issue (Jira / GitLab)<br/>• essai rapide (copie l'actuel)"]
+    kind --> name["Nom auto-suggéré<br/>(depuis l'issue / la description)"]
+    name --> dflt["Tout le reste = défauts malins<br/>(avancé repliable : base, layout, script)"]
+  end
+  create --> go(["Go — un seul geste"])
+
+  go --> setup
+  subgraph setup["2 · Aurora prépare — ⚒ BUILD : isolation port réelle"]
+    direction TB
+    iso["Crée une copie isolée du repo"] --> dep["Installe les dépendances"]
+    dep --> ports["Choisit des ports libres<br/>automatiquement"]
+    ports --> run["Démarre le(s) serveur(s) de dev"]
+  end
+  setup --> ready(["Workspace prêt<br/>serveurs up · ports affichés"])
+
+  ready --> work
+  subgraph work["3 · Travailler"]
+    direction TB
+    term["Terminal(s) + scripts"]
+    multi["Plusieurs serveurs ?<br/>chacun son port, affiché"]
+    switch["Switch entre workspaces<br/>les autres continuent, isolés"]
+    changes["Voir les changements / diff"]
+    term --- multi --- switch --- changes
+  end
+
+  work --> wrap
+  subgraph wrap["4 · Finir — ⚒ BUILD : teardown de 1re classe"]
+    direction TB
+    pr["Ouvrir une PR / MR"] --> done{"Travail fini ?"}
+    done -->|"non, plus tard"| keep["Le garder · y revenir"]
+    done -->|oui| teardown["Supprimer le workspace<br/>→ stoppe les serveurs<br/>→ retire la copie isolée<br/>→ (option) supprime la branche"]
+  end
+  teardown --> clean(["Propre · rien ne traîne"])
+
+  %% ---- edge cases repos ----
+  add -.->|"déjà ajouté"| dupe["Switch dessus<br/>au lieu de dupliquer"]
+  openFolder -.->|"pas un repo git"| notGit["Proposer git init<br/>ou choisir un autre dossier"]
+  clone -.->|"auth / réseau échoue"| cloneFail["Montre l'erreur · Réessayer"]
+  manage -.->|"workspaces actifs"| activeWs["Teardown des workspaces d'abord"]
+  tracked -.->|"dossier déplacé / supprimé"| missing["Marqué introuvable<br/>Relocaliser ou retirer"]
+
+  %% ---- edge cases workspace ----
+  name -.->|"nom déjà pris"| nameTaken["Propose un nom libre"]
+  nameTaken -.-> name
+  dep -.->|"install échoue"| depFail["Montre l'erreur · Réessayer<br/>workspace quand même utilisable"]
+  ports -.->|"port occupé"| portBusy["En prend un autre · le signale"]
+  run -.->|"pas de clé IA"| noAI["Marche pareil<br/>sans nommage IA ni agent"]
+  multi -.->|"un serveur crash"| crash["Visible · redémarrable d'un clic"]
+  teardown -.->|"changements non poussés"| warn["Avertit avant de supprimer"]
+  ready -.->|"je quitte l'app"| quit["Arrêt propre des serveurs"]
+  quit -.->|"je rouvre"| restore["Workspaces restaurés<br/>reprise possible"]
+  restore -.-> ready
+
+  subgraph principes["Principes UX — règles de la source de vérité"]
+    direction TB
+    pr1["1 · Cible toujours visible & épinglée<br/>repo / pane jamais devinés, jamais perdus à la frappe"]
+    pr2["2 · Tout défaut affiché & modifiable<br/>base · preset · script · agent — rien de caché"]
+    pr3["3 · Un seul chemin de création<br/>pas de quick vs form qui divergent"]
+    pr4["4 · État rendu visible<br/>port alloué · branche · serveurs up"]
+    pr5["5 · Teardown réversible de 1re classe<br/>+ zéro knob mort (un réglage n'existe que s'il agit)"]
+    pr1 ~~~ pr2 ~~~ pr3 ~~~ pr4 ~~~ pr5
+  end
+
+  subgraph scope["Décisions de scope — reprise de contrôle"]
+    direction TB
+    sBuild["BUILD · le cœur manquant<br/>isolation port réelle + port affiché<br/>teardown 1re classe (worktreeRemove + kill du groupe)"]
+    sUnify["UNIFY<br/>un seul chemin de création (lance toujours le script)<br/>une cible visible & épinglée"]
+    sKeep["KEEP<br/>repos + lanes · switch · scripts par repo · basePort<br/>auto-rename tabs · génération IA de scripts"]
+    sDefer["DEFER<br/>multi-comptes IA · Jira 2-way (garder issue read-only)<br/>largeur des presets · container"]
+    sCut["CUT<br/>couche agent IA (badge/états/scope/kickoff)<br/>knobs morts (lifecycle · isolation · auto-port)<br/>source GitLab · 'or create' · actions mortes"]
+    sBuild ~~~ sUnify ~~~ sKeep ~~~ sDefer ~~~ sCut
+  end
+
+  classDef edge fill:#241c10,stroke:#e3b341,color:#ffe9b0;
+  classDef good fill:#10241a,stroke:#3ddc84,color:#bff5d6;
+  classDef principle fill:#10202c,stroke:#4aa3df,color:#cfe8ff;
+  class dupe,notGit,cloneFail,activeWs,missing,nameTaken,depFail,portBusy,noAI,crash,warn,quit,restore edge;
+  class go,ready,clean,tracked good;
+  class pr1,pr2,pr3,pr4,pr5 principle;
+  style principes fill:#0b1620,stroke:#4aa3df,color:#cfe8ff;
+  classDef buildc fill:#241033,stroke:#b388ff,color:#e9ddff;
+  classDef unifyc fill:#0c2626,stroke:#33d6c0,color:#c6fff6;
+  classDef keepc fill:#10241a,stroke:#3ddc84,color:#bff5d6;
+  classDef deferc fill:#1c1c22,stroke:#8a909a,color:#cfd3da;
+  classDef cutc fill:#2c1013,stroke:#ff6b6b,color:#ffd0d0;
+  class sBuild buildc;
+  class sUnify unifyc;
+  class sKeep keepc;
+  class sDefer deferc;
+  class sCut cutc;
+  style scope fill:#0a0c10,stroke:#3a4150,color:#e6e6e6;

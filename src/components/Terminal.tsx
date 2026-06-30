@@ -9,7 +9,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { pty } from "../term/pty";
-import { useStore, type PaneState, type StoreApiState } from "../state/store";
+import { useStore, findPane, workspaceOfPane } from "../state/store";
 
 // Accent hex pairs [base, bright]. xterm renders on canvas (no CSS vars), so it
 // needs concrete colors; these mirror the blocks palette and track the accent.
@@ -45,11 +45,6 @@ const ZSH_INIT =
   "autoload -Uz add-zsh-hook 2>/dev/null && { add-zsh-hook preexec _aurora_pe; add-zsh-hook precmd _aurora_pc; }; " +
   "printf '\\e]7;file://%s%s\\a' \"${HOST:-localhost}\" \"$PWD\"; printf '\\e]1337;AuroraReady\\a'; clear\n";
 
-function findPane(s: StoreApiState, id: number): PaneState | undefined {
-  for (const g of s.tabs) for (const p of g.panes) if (p.id === id) return p;
-  return undefined;
-}
-
 export function Terminal({ paneId }: { paneId: number }) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
@@ -70,6 +65,8 @@ export function Terminal({ paneId }: { paneId: number }) {
   const fontSize = useStore((s) => s.settings.fontSize);
   const accent = useStore((s) => s.settings.accent);
   const rawMode = useStore((s) => findPane(s, paneId)?.rawMode ?? false);
+  const ptyEpoch = useStore((s) => findPane(s, paneId)?.ptyEpoch ?? 0);
+  const healAttempts = useRef(0);
 
   useEffect(() => {
     const settings = useStore.getState().settings;
@@ -199,9 +196,10 @@ export function Terminal({ paneId }: { paneId: number }) {
     let initTimer: number | undefined;
 
     const startCwd = findPane(useStore.getState(), paneId)?.cwd;
+    const startEnv = workspaceOfPane(useStore.getState(), paneId)?.env;
     pty
       .spawn(
-        { cwd: startCwd, cols: term.cols, rows: term.rows },
+        { cwd: startCwd, cols: term.cols, rows: term.rows, env: startEnv },
         (bytes) => {
           const text = decoderRef.current.decode(bytes, { stream: true });
           if (!readyRef.current) {
@@ -277,6 +275,19 @@ export function Terminal({ paneId }: { paneId: number }) {
         } else {
           useStore.getState().setReady(paneId);
         }
+      })
+      .catch((err) => {
+        // A failed spawn used to vanish silently, leaving ptyId null so every
+        // typed command was dropped with no feedback. Surface it instead.
+        if (disposed) return;
+        const msg = String(err);
+        console.error(`[aurora] pty spawn failed for pane ${paneId}:`, msg);
+        const st = useStore.getState();
+        const p = findPane(st, paneId);
+        st.startBlock(paneId, "", p?.cwd ?? "");
+        st.appendOutput(paneId, `\x1b[31maurora: couldn't start a shell here — ${msg}\x1b[0m\n`);
+        st.endBlock(paneId, 1);
+        st.markExited(paneId);
       });
 
     const ro = new ResizeObserver(() => {
@@ -299,7 +310,24 @@ export function Terminal({ paneId }: { paneId: number }) {
       if (ptyIdRef.current) pty.kill(ptyIdRef.current);
       term.dispose();
     };
+  }, [paneId, ptyEpoch]);
+
+  // Self-heal: if a spawn was lost (e.g. a boot-time mount/dispose race left this
+  // pane with no shell), respawn it once it's been mounted a moment with no PTY.
+  // Capped so a genuinely failing spawn can't loop forever.
+  useEffect(() => {
+    healAttempts.current = 0;
   }, [paneId]);
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      const p = findPane(useStore.getState(), paneId);
+      if (p && !p.ptyId && !p.exited && healAttempts.current < 3) {
+        healAttempts.current += 1;
+        useStore.getState().respawnPane(paneId);
+      }
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [paneId, ptyEpoch]);
 
   useEffect(() => {
     const term = termRef.current;

@@ -15,6 +15,11 @@ export function listDir(path: string, includeHidden = false): Promise<DirEntry[]
   return invoke<DirEntry[]>("list_dir", { path, includeHidden }).catch(() => []);
 }
 
+/** Read a text file, truncated to `maxBytes`. Resolves to null when unreadable. */
+export function readTextFile(path: string, maxBytes = 8192): Promise<string | null> {
+  return invoke<string>("read_text_file", { path, maxBytes }).catch(() => null);
+}
+
 export function gitBranch(cwd: string): Promise<string | null> {
   return invoke<string | null>("git_branch", { cwd }).catch(() => null);
 }
@@ -39,6 +44,70 @@ export function gitSwitch(cwd: string, branch: string): Promise<SwitchResult> {
 
 export function gitRoot(cwd: string): Promise<string | null> {
   return invoke<string | null>("git_root", { cwd }).catch(() => null);
+}
+
+export interface RepoInfo {
+  root: string;
+  /** The main worktree root — shared by a repo and all its worktrees (the
+   *  canonical key for per-repo config, scripts, and AI accounts). */
+  main_root: string;
+  name: string;
+  default_branch: string;
+  current_branch: string | null;
+}
+
+/** Identify the repo containing `cwd` (root, name, default + current branch), or null. */
+export function gitRepoInfo(cwd: string): Promise<RepoInfo | null> {
+  return invoke<RepoInfo | null>("git_repo_info", { cwd }).catch(() => null);
+}
+
+export interface StatusSummary {
+  files: number;
+  added: number;
+  removed: number;
+  conflicted: number;
+}
+
+/** Summarize a worktree's change vs `base` (changed files, ±lines, conflicts). */
+export function gitStatusSummary(dir: string, base: string): Promise<StatusSummary | null> {
+  return invoke<StatusSummary>("git_status_summary", { dir, base }).catch(() => null);
+}
+
+/** Read a `package.json` field (literal key or dot-path) from `dir`, or null. */
+export function readPackageField(dir: string, field: string): Promise<string | null> {
+  return invoke<string | null>("read_package_field", { dir, field }).catch(() => null);
+}
+
+export interface BranchValidator {
+  regex: string;
+  source: string;
+}
+
+/** Detect the repo's `validate-branch-name` rule (regex + where it's defined). */
+export function detectBranchValidator(dir: string): Promise<BranchValidator | null> {
+  return invoke<BranchValidator | null>("detect_branch_validator", { dir }).catch(() => null);
+}
+
+export interface ValidateResult {
+  ok: boolean;
+  message?: string | null;
+  /** True when a real repo validator was found and applied. */
+  enforced: boolean;
+}
+
+/** Validate a branch name against the repo's detected rule (authoritative). */
+export function validateBranchNameBackend(dir: string, name: string): Promise<ValidateResult> {
+  return invoke<ValidateResult>("validate_branch_name", { dir, name }).catch(() => ({
+    ok: true,
+    message: null,
+    enforced: false,
+  }));
+}
+
+/** Resolve a path to its canonical form (follows symlinks, e.g. /tmp → /private/tmp on macOS).
+ *  Falls back to the input unchanged when the path does not exist or canonicalization fails. */
+export function pathResolve(path: string): Promise<string> {
+  return invoke<string>("path_resolve", { path }).catch(() => path);
 }
 
 /** Collapse `$HOME` to `~` for display. */

@@ -5,6 +5,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+/**
+ * Liveness status returned by `pty_server_status` (D8 probe).
+ * - "capturing"  : sampler running, pgid not yet resolved (booting)
+ * - "alive"      : captured pgid answers killpg(pgid, 0)
+ * - "dead"       : captured pgid is ESRCH (server exited)
+ * - "uncaptured" : capture gave up (no distinct job found) — front falls back to block flag
+ */
+export type ServerStatus = "capturing" | "alive" | "dead" | "uncaptured";
+
 export interface SpawnResult {
   id: string;
   shell: string;
@@ -54,7 +63,7 @@ class PtyHub {
   }
 
   async spawn(
-    opts: { cwd?: string; cols: number; rows: number },
+    opts: { cwd?: string; cols: number; rows: number; env?: Record<string, string> },
     onData: DataCb,
     onExit: ExitCb,
   ): Promise<SpawnResult> {
@@ -64,6 +73,8 @@ class PtyHub {
       cols: Math.max(1, Math.floor(opts.cols)),
       rows: Math.max(1, Math.floor(opts.rows)),
       shell: null,
+      // Rust expects Vec<(String,String)> — send entries as [k, v] pairs.
+      env: opts.env ? Object.entries(opts.env) : null,
     });
     this.dataSubs.set(res.id, onData);
     this.exitSubs.set(res.id, onExit);
@@ -92,6 +103,23 @@ class PtyHub {
     this.exitSubs.delete(id);
     this.pending.delete(id);
     return invoke("pty_kill", { id });
+  }
+
+  /**
+   * Fire-and-forget: start the Rust sampler that captures the server's real
+   * process group for this PTY session. Safe to call and ignore the promise.
+   * (D7 — invoke pty_capture_server_pgid)
+   */
+  captureServerPgid(id: string): Promise<void> {
+    return invoke("pty_capture_server_pgid", { id });
+  }
+
+  /**
+   * Probe whether the captured server process group is still alive.
+   * Returns one of the `ServerStatus` literals. (D8 — invoke pty_server_status)
+   */
+  serverStatus(id: string): Promise<ServerStatus> {
+    return invoke<ServerStatus>("pty_server_status", { id });
   }
 }
 

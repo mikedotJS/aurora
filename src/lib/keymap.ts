@@ -2,7 +2,7 @@
 // command runner. In normal mode Aurora owns the prompt; xterm's textarea (raw
 // mode) and form fields keep their own keystrokes.
 
-import { useStore, activePane, type PaneState } from "../state/store";
+import { useStore, activePane, activeGroup, activeWorkspace, findPane, type PaneState } from "../state/store";
 import { pty } from "../term/pty";
 import { claudeSuggest, NoKeyError } from "../ai/suggest";
 import { typoFix, isInteractive, splitPathToken, folderCandidates, commonPrefix, type PathToken } from "./commands";
@@ -110,7 +110,15 @@ function runInShell(pane: PaneState, cmd: string) {
   s.startBlock(pane.id, cmd, pane.cwd);
   // Hand the pane to interactive programs that don't use the alternate screen.
   if (isInteractive(trimmed)) s.setRawMode(pane.id, true);
-  if (pane.ptyId) pty.write(pane.ptyId, cmd + "\n");
+  if (pane.ptyId) {
+    pty.write(pane.ptyId, cmd + "\n");
+  } else {
+    // No live shell (e.g. a boot-time spawn was lost) — don't drop the command
+    // silently. Tell the user and kick off a respawn so the pane self-heals.
+    s.appendOutput(pane.id, "\x1b[33maurora: this pane lost its shell — restarting it, run your command again\x1b[0m\n");
+    s.endBlock(pane.id, 1);
+    s.respawnPane(pane.id);
+  }
 }
 
 function submit(pane: PaneState, value: string) {
@@ -170,11 +178,7 @@ async function triggerFolderCompletion(pane: PaneState, tok: PathToken) {
   const entries = await listDir(completionBase(pane.cwd, tok.dir), tok.leaf.startsWith("."));
 
   // Freshness guard: drop the result if the user kept typing.
-  let cur: PaneState | undefined;
-  for (const g of useStore.getState().tabs) {
-    const p = g.panes.find((pp) => pp.id === pane.id);
-    if (p) { cur = p; break; }
-  }
+  const cur: PaneState | undefined = findPane(useStore.getState(), pane.id);
   if (!cur || cur.input !== pane.input) return;
 
   const matches = folderCandidates(entries, tok.leaf);
@@ -196,8 +200,7 @@ async function triggerFolderCompletion(pane: PaneState, tok: PathToken) {
 
 export function handleKeyDown(e: KeyboardEvent) {
   const s = useStore.getState();
-  const g = s.tabs[s.active];
-  const pane = g?.panes[g.active];
+  const pane = activePane(s);
   if (!pane) return;
 
   const tag = (e.target as HTMLElement | null)?.tagName ?? "";
@@ -216,6 +219,15 @@ export function handleKeyDown(e: KeyboardEvent) {
     if (k === "Escape") {
       e.preventDefault();
       s.closeSettings();
+    }
+    return;
+  }
+  // The command palette owns its keys via its focused input; this only catches
+  // Esc when focus has left the field.
+  if (s.command) {
+    if (k === "Escape") {
+      e.preventDefault();
+      s.closeCommand();
     }
     return;
   }
@@ -267,16 +279,28 @@ export function handleKeyDown(e: KeyboardEvent) {
       return;
     }
     if (k === ",") return void (e.preventDefault(), s.openSettings());
-    if (k === "d" || k === "D") return void (e.preventDefault(), s.splitPane(e.shiftKey ? "v" : "h"), focusRoot());
+    if (k === "k" || k === "K") return void (e.preventDefault(), s.openCommand());
+    if (k === "g" || k === "G") return void (e.preventDefault(), s.setPaneView(pane.id, "changes"));
+    if (k === "d" || k === "D") {
+      e.preventDefault();
+      if (e.altKey) s.setPaneView(pane.id, pane.view === "changes" ? "terminal" : "changes");
+      else {
+        s.splitPane(e.shiftKey ? "v" : "h");
+        focusRoot();
+      }
+      return;
+    }
     if (k === "t" || k === "T") return void (e.preventDefault(), s.newTab(), focusRoot());
     if (k === "w" || k === "W") {
       e.preventDefault();
-      const gg = s.tabs[s.active];
+      const w = activeWorkspace(s);
+      const gg = activeGroup(s);
       if (gg && gg.panes.length > 1) s.closePane();
-      else s.closeTab(s.active);
+      else if (w) s.closeTab(w.active);
       focusRoot();
       return;
     }
+    if (k === "b" || k === "B") return void (e.preventDefault(), s.toggleRail());
     if (/^[1-9]$/.test(k)) return void (e.preventDefault(), s.selectTab(parseInt(k, 10) - 1), focusRoot());
     if (k === "}" || k === "]") return void (e.preventDefault(), s.cycleTab(1), focusRoot());
     if (k === "{" || k === "[") return void (e.preventDefault(), s.cycleTab(-1), focusRoot());
@@ -298,6 +322,14 @@ export function handleKeyDown(e: KeyboardEvent) {
       if (k === "c" || k === "C") s.setInput(pane.id, "");
       return;
     }
+    return;
+  }
+
+  // The Changes view owns its pane: app shortcuts (⌘…) already ran above; here we
+  // only let Esc drop back to the terminal and swallow prompt-editing keys so the
+  // hidden prompt underneath isn't touched.
+  if (pane.view === "changes" && !pane.rawMode) {
+    if (k === "Escape") return void (e.preventDefault(), s.setPaneView(pane.id, "terminal"));
     return;
   }
 

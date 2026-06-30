@@ -15,6 +15,14 @@ export function keyDelete(): Promise<void> {
   return invoke("key_delete");
 }
 
+// ---- additional AI accounts (keyed by account id) ----
+export function aiKeySet(id: string, key: string): Promise<void> {
+  return invoke("ai_key_set", { id, key });
+}
+export function aiKeyDelete(id: string): Promise<void> {
+  return invoke<void>("ai_key_delete", { id }).catch(() => undefined);
+}
+
 /** Masked preview, e.g. `sk-ant-…1a2b`. */
 export function maskKey(key: string): string {
   if (!key) return "";

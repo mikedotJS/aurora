@@ -1,7 +1,7 @@
 // Bottom status bar: live cwd + git branch, merge-requests entry, tab counter,
 // and keyboard hints.
 
-import { useStore, activePane } from "../state/store";
+import { useStore, activePane, activeWorkspace } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 import { scriptsForRoot } from "../lib/scripts";
 import { BranchChip } from "./BranchSwitcher";
@@ -9,9 +9,11 @@ import { BranchChip } from "./BranchSwitcher";
 export function StatusBar() {
   const home = useStore((s) => s.home);
   const pane = useStore((s) => activePane(s));
-  const tabsLen = useStore((s) => s.tabs.length);
-  const active = useStore((s) => s.active);
+  const tabsLen = useStore((s) => activeWorkspace(s)?.tabs.length ?? 1);
+  const active = useStore((s) => activeWorkspace(s)?.active ?? 0);
+  const diff = useStore((s) => activeWorkspace(s)?.diff ?? null);
   const openPanel = useStore((s) => s.openPanel);
+  const setPaneView = useStore((s) => s.setPaneView);
   const userScripts = useStore((s) => s.userScripts);
   const repoMrs = useStore((s) => s.repoMrs);
   const unseen = useStore((s) => s.unseen);
@@ -53,6 +55,18 @@ export function StatusBar() {
               {mrs ? `${mrs.length} MRs` : "MRs"}
             </span>
           </>
+        )}
+        {diff && diff.files > 0 && pane && (
+          <span
+            onClick={() => setPaneView(pane.id, "changes")}
+            title="review changes (⌘G)"
+            style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+          >
+            <span style={{ color: "var(--acd)" }}>⊟</span>
+            {diff.files} changed
+            {diff.added > 0 && <span style={{ color: "var(--acd)" }}>+{diff.added}</span>}
+            {diff.removed > 0 && <span style={{ color: "var(--err)" }}>−{diff.removed}</span>}
+          </span>
         )}
         {hasScripts && (
           <span

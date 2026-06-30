@@ -115,6 +115,22 @@ pub fn list_dir(path: String, include_hidden: Option<bool>) -> Result<Vec<DirEnt
     Ok(out)
 }
 
+/// Read a UTF-8 text file, truncated to `max_bytes` (on a char boundary). Used by
+/// AI script generation to feed capped manifest contents to the model. Returns an
+/// error string when the file is missing or unreadable; lossily decodes non-UTF-8.
+#[tauri::command]
+pub fn read_text_file(path: String, max_bytes: Option<usize>) -> Result<String, String> {
+    let target = expand_tilde(&path);
+    let bytes = std::fs::read(&target).map_err(|e| e.to_string())?;
+    let cap = max_bytes.unwrap_or(8192).min(bytes.len());
+    // Back off to the previous char boundary so the lossy decode stays clean.
+    let mut end = cap;
+    while end > 0 && (bytes[end - 1] & 0xC0) == 0x80 {
+        end -= 1;
+    }
+    Ok(String::from_utf8_lossy(&bytes[..end]).to_string())
+}
+
 /// Current git branch for a directory, or `None` when not a repo.
 ///
 /// Uses `git branch --show-current` (not `rev-parse HEAD`) so it also reports the
@@ -213,4 +229,16 @@ pub fn git_root(cwd: String) -> Option<String> {
 #[tauri::command]
 pub fn home_dir() -> String {
     std::env::var("HOME").unwrap_or_else(|_| "/".into())
+}
+
+/// Resolve a path to its canonical form via `std::fs::canonicalize` (follows symlinks).
+/// Returns the tilde-expanded path unchanged when the path does not exist or canonicalization
+/// fails. Used to make cross-layer path comparisons robust against symlinked prefixes
+/// (e.g. `/tmp` → `/private/tmp` on macOS) where plain string equality is unreliable.
+#[tauri::command]
+pub fn path_resolve(path: String) -> String {
+    let expanded = expand_tilde(&path);
+    std::fs::canonicalize(&expanded)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(expanded)
 }

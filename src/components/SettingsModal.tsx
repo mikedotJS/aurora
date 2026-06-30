@@ -5,6 +5,7 @@ import type { ReactNode, CSSProperties } from "react";
 import { useStore, MODEL_OPTIONS, type Settings } from "../state/store";
 import { ACCENTS, type AccentKey, type FontKey } from "../lib/theme";
 import { keyDelete } from "../lib/keychain";
+import { Connections } from "./Connections";
 
 const FONT_OPTIONS: { value: FontKey; label: string }[] = [
   { value: "compact", label: "Compact" },
@@ -230,6 +231,8 @@ export function SettingsModal() {
             />
           </Row>
 
+          <Connections />
+
           <Section title="Appearance" />
           <Row label="Accent" desc="Glow and highlight color">
             {(Object.keys(ACCENTS) as AccentKey[]).map((k) => (
@@ -254,6 +257,9 @@ export function SettingsModal() {
           <Section title="Shell" />
           <Row label="Ghost autocomplete" desc="Inline command completion as you type">
             <Toggle on={settings.ghost} onToggle={() => set("ghost", !settings.ghost)} />
+          </Row>
+          <Row label="Auto-rename tabs" desc="Name tabs from what's running — a quick Haiku call">
+            <Toggle on={settings.autoRenameTabs} onToggle={() => set("autoRenameTabs", !settings.autoRenameTabs)} />
           </Row>
           <Row label="Ask Claude" desc="? prefix or ⌘↵ turns a line into a command">
             <span style={{ fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>

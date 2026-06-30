@@ -34,3 +34,23 @@ export async function claudeSuggest(
     throw new Error(msg, { cause: e });
   }
 }
+
+/**
+ * Generic one-shot completion: supply the system prompt + user message, get the
+ * raw assistant text back. Used by the AI branch-naming mode, which owns its own
+ * prompt and validator-retry loop. Throws {@link NoKeyError} when no key is set.
+ */
+export async function claudeText(
+  system: string,
+  prompt: string,
+  model: string,
+  maxTokens?: number,
+): Promise<string> {
+  try {
+    return await invoke<string>("claude_text", { system, prompt, model, maxTokens });
+  } catch (e) {
+    const msg = String(e);
+    if (msg.includes("no-key")) throw new NoKeyError();
+    throw new Error(msg, { cause: e });
+  }
+}
