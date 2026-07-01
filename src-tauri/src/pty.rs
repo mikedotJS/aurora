@@ -99,8 +99,10 @@ impl PtyManager {
 }
 
 #[derive(Clone, Serialize)]
-struct PtyData {
-    id: String,
+struct PtyData<'a> {
+    /// Borrowed from the reader thread's owned `id` — avoids allocating a fresh
+    /// `String` for every `pty:data` event on the hot output path.
+    id: &'a str,
     /// base64-encoded raw bytes (avoids splitting multi-byte UTF-8 across reads)
     data: String,
 }
@@ -183,13 +185,21 @@ pub fn pty_spawn(
         let app = app.clone();
         let id = id.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 8192];
+            // 64 KiB read buffer (heap-allocated once). A blocking read still
+            // returns as soon as *any* data is available, so keystroke-echo
+            // latency is unchanged; but under bulk output it drains more of the
+            // kernel PTY buffer per syscall, coalescing what would otherwise be
+            // several 8 KiB reads into one larger `pty:data` event. Fewer IPC
+            // crossings, base64 calls and allocations; byte order/content and
+            // arbitrary chunk boundaries are unchanged (already handled downstream).
+            let mut buf = vec![0u8; 65536];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
                         let data = STANDARD.encode(&buf[..n]);
-                        if app.emit("pty:data", PtyData { id: id.clone(), data }).is_err() {
+                        // Borrow `id` rather than cloning it into every payload.
+                        if app.emit("pty:data", PtyData { id: &id, data }).is_err() {
                             break;
                         }
                     }

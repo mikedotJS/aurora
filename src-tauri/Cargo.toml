@@ -33,3 +33,14 @@ tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-dialog = "2.7.1"
 libc = "0.2"
 
+# Release profile: whole-program optimization for the shipped binary.
+# `lto` + `codegen-units = 1` let the optimizer inline across crate boundaries
+# (base64 encode, serde_json serialization, regex in git/jira parsing) at the
+# cost of longer build times. `strip` removes debug symbols → smaller binary
+# for notarization/DMG. Pure runtime/size win, no behavior change.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+

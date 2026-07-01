@@ -1,6 +1,7 @@
 // Renders every tab group (only the active one visible) so background sessions
 // keep their PTYs alive. Each group lays its panes out in the Aurora grid.
 
+import { memo } from "react";
 import { useStore, type Group } from "../state/store";
 import { Pane } from "./Pane";
 
@@ -11,7 +12,11 @@ function gridShape(n: number, split: "h" | "v") {
   return { cols, rows: Math.ceil(n / cols) };
 }
 
-function GroupGrid({ group, visible }: { group: Group; visible: boolean }) {
+// Memoized so a background workspace's groups (whose `group` reference is untouched
+// by a foreground pane's output) don't re-render when PaneArea re-renders on every
+// output chunk. `group` is a stable reference until that group is patched; `visible`
+// is a boolean — default shallow compare is correct.
+const GroupGrid = memo(function GroupGrid({ group, visible }: { group: Group; visible: boolean }) {
   const n = group.panes.length;
   const multiple = n > 1;
   const { cols, rows } = gridShape(n, group.split);
@@ -33,7 +38,7 @@ function GroupGrid({ group, visible }: { group: Group; visible: boolean }) {
       ))}
     </div>
   );
-}
+});
 
 export function PaneArea() {
   // Render every workspace's groups so background PTYs stay alive across a

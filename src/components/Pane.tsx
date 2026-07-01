@@ -98,7 +98,14 @@ const BlockView = memo(function BlockView({
   );
 });
 
-export function Pane({ pane, index, isActive, multiple }: Props) {
+// Memoized: PaneArea subscribes to the whole `workspaces` array and re-renders on
+// every terminal output chunk (appendOutput → new workspaces array). `patchPane`
+// only rebuilds the ONE changed pane object; sibling panes keep their reference.
+// So this memo lets React skip re-rendering every other pane (in this split, in
+// other tabs, and in background workspaces) on each chunk — the streaming pane is
+// the only one that re-renders. All props are primitives except `pane` (a stable
+// reference until that pane is patched), so the default shallow compare is correct.
+export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Props) {
   const home = useStore((s) => s.home);
   const keyEntry = useStore((s) => s.keyEntry);
   const keyError = useStore((s) => s.keyError);
@@ -311,7 +318,7 @@ export function Pane({ pane, index, isActive, multiple }: Props) {
       </div>
     </div>
   );
-}
+});
 
 function KeyEntry({ input, keyError }: { input: string; keyError: string | null }) {
   return (

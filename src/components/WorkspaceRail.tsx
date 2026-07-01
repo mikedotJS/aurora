@@ -2,7 +2,7 @@
 // (git state), the issue/title, branch, a short status line and the diff counts
 // (a door into the Changes view).
 
-import { Fragment, useState, useEffect } from "react";
+import { Fragment, memo, useState, useEffect } from "react";
 import { useStore, activeWorkspace, type Workspace, type Script } from "../state/store";
 import { worktreeSafety, worktreeList } from "../lib/worktree";
 import { pathResolve } from "../lib/sys";
@@ -32,7 +32,14 @@ export function StatusDot({ ws, size = 7 }: { ws: Workspace; size?: number }) {
   );
 }
 
-function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
+// Memoized: WorkspaceRail subscribes to the whole `workspaces` array and re-renders
+// on every store mutation (including each terminal output chunk). `patchPane` only
+// rebuilds the workspace object that owns the changed pane; every other workspace
+// keeps its reference. So this memo lets the cards of unaffected workspaces skip
+// re-rendering on each chunk — only the active/streaming workspace's card updates.
+// Props are `ws` (a stable reference until that workspace is patched) and `active`
+// (a boolean), so the default shallow compare is correct.
+const WorkspaceCard = memo(function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
   const switchWorkspace = useStore((s) => s.switchWorkspace);
   const setPaneView = useStore((s) => s.setPaneView);
   const line = statusLine(ws);
@@ -250,7 +257,7 @@ function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
       </div>
     </div>
   );
-}
+});
 
 // Equal-size centered box; SVG icons (below) are geometrically centered on their
 // viewBox, so the gear and + align exactly — unlike text glyphs (⚙ sits low).
