@@ -646,35 +646,26 @@ describe("WorkspaceRail — add repository", () => {
 // ── WorkspaceContextBar ─────────────────────────────────────────────────────
 
 describe("WorkspaceContextBar", () => {
-  // BUG (confirmed, reproduced in isolation — see notes): WorkspaceContextBar's
-  // `scripts` selector is
-  //   useStore((s) => (repoId ? (s.userScripts[repoId]?.scripts ?? []) : []))
-  // Both the `repoId` falsy branch and the `?? []` fallback allocate a brand
-  // new array literal on *every* selector invocation. Zustand v5's plain
-  // `useStore` (unlike v4's useSyncExternalStoreWithSelector) does not memoize
-  // selector output, so React's external-store snapshot check sees a "new"
-  // value on every render and enters an infinite render loop, which React
-  // eventually kills with "Maximum update depth exceeded" — a real crash, not
-  // a test artifact (reproduced with a bare zustand store + this exact
-  // selector shape, no Tauri/mock involvement). This fires whenever
-  // WorkspaceContextBar is asked to render with no active workspace, or an
-  // active workspace whose repoId is null (any manual lane) — hooks run
-  // before the `if (!ws) return null` early return, so even the "renders
-  // nothing" case is affected.
-  it("BUG: crashes with 'Maximum update depth exceeded' when there is no active workspace (src/components/WorkspaceRail.tsx:620-622)", () => {
+  // Regression: WorkspaceContextBar's `scripts` selector used to allocate a fresh
+  // `[]` on every invocation (the repoId-falsy branch and the `?? []` fallback).
+  // Zustand v5's plain useStore doesn't memoize selector output, so React's
+  // external-store snapshot saw a "new" value every render → infinite loop →
+  // "Maximum update depth exceeded" (black-screen crash) whenever there was no
+  // active workspace, or a manual lane (repoId null) — the hooks run before the
+  // `if (!ws) return null` early return. Fixed with a stable EMPTY_SCRIPTS
+  // constant so the selector returns a referentially-stable value.
+  it("renders nothing (no crash / no infinite loop) when there is no active workspace", () => {
     seed({ activeWs: null });
-    expect(() => render(<WorkspaceContextBar />)).toThrow(/Maximum update depth exceeded/);
+    expect(() => render(<WorkspaceContextBar />)).not.toThrow();
   });
 
-  it("BUG: crashes the same way for a manual-lane active workspace (repoId null)", () => {
+  it("renders a manual-lane active workspace (repoId null) without an infinite loop", () => {
     const w = makeWorkspace({ id: "w1", repoId: null, issueKey: "X-1" });
     seed({ workspaces: [w], activeWs: "w1" });
-    expect(() => render(<WorkspaceContextBar />)).toThrow(/Maximum update depth exceeded/);
+    expect(() => render(<WorkspaceContextBar />)).not.toThrow();
   });
 
   it("renders nothing when the active workspace has no issueKey/preset/offset", () => {
-    // repoId must be truthy with a *registered* (even if empty) userScripts
-    // entry — see the BUG note above for why a null repoId isn't safe to render.
     const w = makeWorkspace({ id: "w1", repoId: "/repo", issueKey: null, preset: null, env: {} });
     seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts: [], onEnter: null } } });
     const { container } = render(<WorkspaceContextBar />);
@@ -815,6 +806,7 @@ describe("WorkspaceContextBar", () => {
   // is dead code in practice — the Run/Stop button only renders when `servers.length
   // > 0`, which requires port-scripts keyed by a truthy repoId in userScripts, so
   // `ws.repoId` is always truthy whenever that onClick can fire. Rendering the bar
-  // with a null repoId to reach it directly hits the selector crash documented
-  // above, so this fallback can't be exercised through a real render either way.
+  // with a null repoId is now safe (see the EMPTY_SCRIPTS regression above), but
+  // the Run/Stop onClick still can't fire without a truthy repoId, so this
+  // fallback stays dead either way.
 });

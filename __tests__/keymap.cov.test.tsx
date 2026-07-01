@@ -96,6 +96,70 @@ describe("handleKeyDown — form field guard", () => {
     const evt = keyEvt("a");
     expect(() => handleKeyDown(evt)).not.toThrow();
   });
+
+  it("still respects the form-field guard for the pane-independent ⌘K/⌘,/⌘B shortcuts", () => {
+    useStore.setState({ activeWs: null });
+    for (const key of [",", "k", "b"]) {
+      const evt = keyEvt(key, { metaKey: true, target: { tagName: "INPUT" } });
+      handleKeyDown(evt);
+      expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(0);
+    }
+    expect(useStore.getState().settingsOpen).toBe(false);
+    expect(useStore.getState().command).toBeNull();
+    expect(useStore.getState().railCollapsed).toBe(false);
+  });
+});
+
+// ── Empty-startup state (no active workspace/pane) ──────────────────────────
+
+describe("handleKeyDown — pane-independent ⌘ shortcuts in the empty-startup state", () => {
+  it("⌘K opens the command palette with no active pane (EmptyState's ⌘K affordance)", () => {
+    useStore.setState({ activeWs: null });
+    const evt = keyEvt("k", { metaKey: true });
+    handleKeyDown(evt);
+    expect(useStore.getState().command).not.toBeNull();
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("⌘, opens settings with no active pane", () => {
+    useStore.setState({ activeWs: null });
+    const evt = keyEvt(",", { metaKey: true });
+    handleKeyDown(evt);
+    expect(useStore.getState().settingsOpen).toBe(true);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("⌘B toggles the workspace rail with no active pane", () => {
+    useStore.setState({ activeWs: null, railCollapsed: false });
+    const evt = keyEvt("b", { metaKey: true });
+    handleKeyDown(evt);
+    expect(useStore.getState().railCollapsed).toBe(true);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("Escape closes settings that were opened with no active pane", () => {
+    useStore.setState({ activeWs: null });
+    useStore.getState().openSettings();
+    expect(useStore.getState().settingsOpen).toBe(true);
+    handleKeyDown(keyEvt("Escape"));
+    expect(useStore.getState().settingsOpen).toBe(false);
+  });
+
+  it("Escape closes the command palette that was opened with no active pane", () => {
+    useStore.setState({ activeWs: null });
+    useStore.getState().openCommand();
+    expect(useStore.getState().command).not.toBeNull();
+    handleKeyDown(keyEvt("Escape"));
+    expect(useStore.getState().command).toBeNull();
+  });
+
+  it("other ⌘ shortcuts that need a pane remain no-ops with no active pane", () => {
+    useStore.setState({ activeWs: null });
+    expect(() => handleKeyDown(keyEvt("v", { metaKey: true }))).not.toThrow();
+    expect(() => handleKeyDown(keyEvt("t", { metaKey: true }))).not.toThrow();
+    expect(useStore.getState().command).toBeNull();
+    expect(useStore.getState().settingsOpen).toBe(false);
+  });
 });
 
 // ── Modal-priority branches ──────────────────────────────────────────────────

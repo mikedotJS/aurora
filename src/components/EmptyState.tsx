@@ -3,10 +3,13 @@
 // boot (0 repo context, 0 restored workspaces; see the empty-startup-state
 // change). Replaces WorkspaceContextBar + TabStrip + PaneArea for that render.
 //
-// Exits only through existing flows: "Add repository" reuses addRepoFromFolder
-// (same busy/error handling as the rail's own control); "Create a workspace"
-// (shown once at least one repo is known) reuses openCommand(). No new create
-// logic is introduced here.
+// It's framed as a live shell prompt — ⇋ aurora ▊, a blown-up echo of the rail's
+// own `⇋ <repo>` header — waiting for its first repository. That makes Aurora's
+// thesis ("a shell that understands plain language") the literal hero of the
+// first screen a new user meets. Exits only through existing flows: "Add
+// repository" reuses addRepoFromFolder (same busy/error handling as the rail's
+// own control); "Create a workspace" (shown once at least one repo is known)
+// reuses openCommand(). No new create logic is introduced here.
 
 import { useState } from "react";
 import { useStore } from "../state/store";
@@ -36,78 +39,95 @@ export function EmptyState() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
+        padding: 24,
       }}
     >
       <div
+        className="aurora-empty"
         style={{
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          gap: 16,
           width: "100%",
-          maxWidth: 300,
-          padding: "0 24px",
+          maxWidth: 344,
           textAlign: "center",
         }}
       >
-        <span style={{ fontFamily: "var(--mono)", fontSize: 15, letterSpacing: ".02em", color: "var(--fg)" }}>
-          aurora
-        </span>
-        <p style={{ margin: 0, fontFamily: "var(--sans)", fontSize: 12.5, color: "var(--dim)", lineHeight: 1.5 }}>
+        {/* Signature: a live shell prompt waiting for its first repo. The ⇋ mark
+            and blinking caret are the page's one spot of colour and motion. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, fontFamily: "var(--mono)" }}>
+          <span aria-hidden style={{ fontSize: 19, lineHeight: 1, color: "var(--acd)" }}>
+            ⇋
+          </span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <span style={{ fontSize: 21, lineHeight: 1, letterSpacing: ".01em", color: "var(--fg)" }}>
+              aurora
+            </span>
+            <span className="aurora-empty__caret" aria-hidden />
+          </span>
+        </div>
+
+        {/* Brand thesis — the wordmark's tagline. */}
+        <p style={{ margin: "16px 0 0", fontFamily: "var(--sans)", fontSize: 12.5, lineHeight: 1.5, color: "var(--dim)" }}>
+          A shell that understands plain language.
+        </p>
+
+        {/* State + directive. Kept verbatim as the actionable subtext. */}
+        <p
+          style={{
+            margin: "13px 0 0",
+            maxWidth: 264,
+            fontFamily: "var(--sans)",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: "var(--faint)",
+          }}
+        >
           No workspace open — add a repository to get started.
         </p>
 
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 9, width: "100%" }}>
-          <div
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "stretch",
+            gap: 9,
+            width: "100%",
+            marginTop: 22,
+          }}
+        >
+          <button
+            type="button"
+            className="aurora-empty-primary"
             onClick={onAddRepo}
+            disabled={addBusy}
+            aria-busy={addBusy}
             title="add an existing repository folder"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              fontFamily: "var(--sans)",
-              fontSize: 12,
-              fontWeight: 500,
-              color: "var(--page)",
-              background: "var(--ac)",
-              border: "1px solid var(--ac)",
-              borderRadius: 8,
-              padding: "9px 14px",
-              cursor: addBusy ? "default" : "pointer",
-              opacity: addBusy ? 0.6 : 1,
-            }}
           >
-            <span>⇋</span>
+            <span aria-hidden>⇋</span>
             {addBusy ? "Opening…" : "Add repository"}
-          </div>
+          </button>
 
           {hasRepos && (
-            <div
+            <button
+              type="button"
+              className="aurora-empty-secondary"
               onClick={() => openCommand()}
               title="create a workspace (⌘K)"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 8,
-                fontFamily: "var(--sans)",
-                fontSize: 12,
-                color: "var(--dim)",
-                border: "1px dashed var(--line)",
-                borderRadius: 8,
-                padding: "9px 14px",
-                cursor: "pointer",
-              }}
             >
-              <span style={{ color: "var(--acd)" }}>+</span>
+              <span aria-hidden style={{ color: "var(--acd)" }}>
+                +
+              </span>
               Create a workspace
-            </div>
+            </button>
           )}
         </div>
 
         {addError && (
-          <div style={{ fontFamily: "var(--sans)", fontSize: 10.5, color: "var(--err)", lineHeight: 1.35 }}>
+          <div
+            role="alert"
+            style={{ marginTop: 12, fontFamily: "var(--sans)", fontSize: 10.5, lineHeight: 1.35, color: "var(--err)" }}
+          >
             {addError}
           </div>
         )}

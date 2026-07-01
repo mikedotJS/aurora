@@ -39,6 +39,7 @@ describe("EmptyState — base copy", () => {
   it("shows the empty-state copy and Add repository, with no Create workspace when there are no repos", () => {
     const { getByText, queryByText } = render(<EmptyState />);
     expect(getByText("aurora")).toBeTruthy();
+    expect(getByText("A shell that understands plain language.")).toBeTruthy();
     expect(getByText("No workspace open — add a repository to get started.")).toBeTruthy();
     expect(getByText("Add repository")).toBeTruthy();
     expect(queryByText("Create a workspace")).toBeNull();

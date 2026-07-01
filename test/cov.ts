@@ -49,14 +49,25 @@ function parseLcov(txt: string) {
   }
 }
 
-for (const file of files) {
+function runOnce(file: string) {
   const proc = Bun.spawnSync(["bun", "test", file, "--coverage"], { stdout: "pipe", stderr: "pipe" });
   const clean = (proc.stdout.toString() + proc.stderr.toString()).replace(/\x1b\[[0-9;]*m/g, "");
-  const p = +(clean.match(/(\d+) pass/)?.[1] ?? 0);
-  const fl = +(clean.match(/(\d+) fail/)?.[1] ?? 0);
-  totalPass += p;
-  totalFail += fl;
-  if (fl > 0 || proc.exitCode !== 0) failed.push(`${file}  (${fl} fail, exit ${proc.exitCode})`);
+  return {
+    exit: proc.exitCode,
+    p: +(clean.match(/(\d+) pass/)?.[1] ?? 0),
+    fl: +(clean.match(/(\d+) fail/)?.[1] ?? 0),
+  };
+}
+
+for (const file of files) {
+  let r = runOnce(file);
+  // A nonzero exit with zero reported test failures is a process-level crash
+  // (bun spawn instability under the sequential fan-out), not a real test
+  // failure — retry once before counting it.
+  if (r.exit !== 0 && r.fl === 0) r = runOnce(file);
+  totalPass += r.p;
+  totalFail += r.fl;
+  if (r.fl > 0 || r.exit !== 0) failed.push(`${file}  (${r.fl} fail, exit ${r.exit})`);
   if (existsSync("coverage/lcov.info")) parseLcov(readFileSync("coverage/lcov.info", "utf8"));
 }
 

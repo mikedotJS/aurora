@@ -166,6 +166,111 @@ select {
   background: transparent;
 }
 
+/* Empty-state (0-workspace boot surface) — the first screen a new user meets.
+   Structural layout lives inline in EmptyState.tsx; these classes own what inline
+   styles can't express: the panel's entrance, the live prompt caret, and the
+   hover / focus-visible / disabled states of the two actions. The colour
+   vocabulary is borrowed on purpose — the primary reuses the run-toggle's tinted
+   accent idiom, the secondary reuses the rail's dashed "+ New workspace" slot. */
+.aurora-empty {
+  animation: rise 0.42s ease both;
+}
+
+/* The live shell caret trailing the wordmark — the page's signature. Reuses the
+   shared `blink` keyframe (hard on/off) so it reads as a real terminal cursor. */
+.aurora-empty__caret {
+  display: inline-block;
+  width: 7px;
+  height: 20px;
+  border-radius: 1.5px;
+  background: var(--ac);
+  box-shadow: 0 0 12px color-mix(in oklab, var(--ac) 60%, transparent);
+  animation: blink 1.15s step-end infinite;
+}
+
+/* Primary action — accent-tinted with a soft bloom so it reads as the one thing
+   to do, without introducing a solid fill the rest of Aurora never uses. */
+.aurora-empty-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in oklab, var(--acd) 55%, var(--line));
+  background: color-mix(in oklab, var(--ac) 12%, transparent);
+  color: var(--ac);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 0 22px -14px var(--ac);
+  transition:
+    color 0.14s ease,
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+.aurora-empty-primary:hover:not(:disabled),
+.aurora-empty-primary:focus-visible {
+  background: color-mix(in oklab, var(--ac) 19%, transparent);
+  border-color: color-mix(in oklab, var(--ac) 60%, var(--line));
+  box-shadow: 0 0 26px -12px var(--ac);
+}
+.aurora-empty-primary:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--ac) 42%, transparent),
+    0 0 26px -12px var(--ac);
+}
+.aurora-empty-primary:disabled {
+  cursor: default;
+  opacity: 0.6;
+  box-shadow: none;
+}
+
+/* Secondary action — the quiet, dashed "new" slot, echoing the rail's
+   "+ New workspace" affordance. Only shown once a repo is known. */
+.aurora-empty-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border-radius: 8px;
+  border: 1px dashed var(--line);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  transition:
+    color 0.14s ease,
+    background-color 0.14s ease,
+    border-color 0.14s ease,
+    box-shadow 0.14s ease;
+}
+.aurora-empty-secondary:hover,
+.aurora-empty-secondary:focus-visible {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--ac) 6%, transparent);
+  border-color: color-mix(in oklab, var(--acd) 40%, var(--line));
+}
+.aurora-empty-secondary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ac) 32%, transparent);
+}
+
+/* Reduced motion: the caret's blink keyframe ends at opacity 0, so the global
+   reduce rule (which snaps every animation to its end state) would hide it.
+   Pin it visible and still instead. */
+@media (prefers-reduced-motion: reduce) {
+  .aurora-empty__caret {
+    animation: none;
+    opacity: 1;
+  }
+}
+
 /* Status bar keyboard-hint group. display:flex is set here (not inline) so the
    @media rule below can override it to none. Inline styles cannot be targeted by
    media queries — moving display ownership to CSS is the only safe approach. */

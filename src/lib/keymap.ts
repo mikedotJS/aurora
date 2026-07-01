@@ -200,8 +200,6 @@ async function triggerFolderCompletion(pane: PaneState, tok: PathToken) {
 
 export function handleKeyDown(e: KeyboardEvent) {
   const s = useStore.getState();
-  const pane = activePane(s);
-  if (!pane) return;
 
   const tag = (e.target as HTMLElement | null)?.tagName ?? "";
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(tag)) return; // form fields / xterm own these
@@ -243,6 +241,20 @@ export function handleKeyDown(e: KeyboardEvent) {
   // and this listener never runs (it bails on INPUT targets above).
   if (s.find.open && k === "Escape") return void (e.preventDefault(), s.closeFind());
 
+  // ⌘, / ⌘K / ⌘B need no active pane (openSettings/openCommand/toggleRail don't
+  // touch the pane) — handle them here, above the active-pane bail below, so they
+  // keep working in the empty-startup state (no workspace/pane yet: the EmptyState
+  // "Create a workspace" affordance advertises ⌘K). Handled here, they're removed
+  // from the pane-dependent ⌘ block further down to avoid a double dispatch.
+  if (e.metaKey) {
+    if (k === ",") return void (e.preventDefault(), s.openSettings());
+    if (k === "k" || k === "K") return void (e.preventDefault(), s.openCommand());
+    if (k === "b" || k === "B") return void (e.preventDefault(), s.toggleRail());
+  }
+
+  const pane = activePane(s);
+  if (!pane) return;
+
   if (e.altKey && !e.metaKey && !e.ctrlKey && k.startsWith("Arrow")) {
     e.preventDefault();
     s.cyclePane(k === "ArrowRight" || k === "ArrowDown" ? 1 : -1);
@@ -278,8 +290,6 @@ export function handleKeyDown(e: KeyboardEvent) {
       }
       return;
     }
-    if (k === ",") return void (e.preventDefault(), s.openSettings());
-    if (k === "k" || k === "K") return void (e.preventDefault(), s.openCommand());
     if (k === "g" || k === "G") return void (e.preventDefault(), s.setPaneView(pane.id, "changes"));
     if (k === "d" || k === "D") {
       e.preventDefault();
@@ -300,7 +310,6 @@ export function handleKeyDown(e: KeyboardEvent) {
       focusRoot();
       return;
     }
-    if (k === "b" || k === "B") return void (e.preventDefault(), s.toggleRail());
     if (/^[1-9]$/.test(k)) return void (e.preventDefault(), s.selectTab(parseInt(k, 10) - 1), focusRoot());
     if (k === "}" || k === "]") return void (e.preventDefault(), s.cycleTab(1), focusRoot());
     if (k === "{" || k === "[") return void (e.preventDefault(), s.cycleTab(-1), focusRoot());

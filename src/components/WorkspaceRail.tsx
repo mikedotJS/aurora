@@ -612,13 +612,19 @@ export function WorkspaceRail() {
   );
 }
 
+/** Stable empty-scripts reference. Returning a fresh `[]` from the selector
+    below would change identity on every render, so Zustand's getSnapshot is
+    never cached and React spins into an infinite re-render loop ("Maximum update
+    depth exceeded") — the black-screen crash on a repoId-less / script-less lane. */
+const EMPTY_SCRIPTS: Script[] = [];
+
 /** The context bar above the tab strip — branch · seed · preset · port. */
 export function WorkspaceContextBar() {
   const ws = useStore(activeWorkspace);
   // Hooks must run before early returns.
   const repoId = ws?.repoId ?? null;
   const scripts = useStore((s): Script[] =>
-    repoId ? (s.userScripts[repoId]?.scripts ?? []) : [],
+    repoId ? (s.userScripts[repoId]?.scripts ?? EMPTY_SCRIPTS) : EMPTY_SCRIPTS,
   );
   // Runtime-only liveness map (D3 revised) — must be before early returns.
   const serverStatus = useStore((s) => s.serverStatus);
