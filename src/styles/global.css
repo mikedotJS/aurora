@@ -283,3 +283,184 @@ select {
     display: none;
   }
 }
+
+/* "Introducing Workspaces" one-time announcement dialog. The overlay, backdrop,
+   panel chrome and dismiss wiring are frozen inline in WorkspacesIntro.tsx;
+   these classes own the celebratory content that inline styles can't express:
+   the worktree-graph hero (a miniature of the real rail — one repo fanning into
+   isolated, per-branch workspaces on their own ports), the value props, and the
+   primary action. The hero is decorative (aria-hidden); assistive tech gets the
+   title + props text. The colour vocabulary is borrowed on purpose — status
+   dots reuse the rail's StatusDot tints, the CTA reuses .aurora-empty-primary. */
+
+/* Hero — a dark "terminal well" inset at the top of the panel. Monospace so the
+   graph reads as a real `git log --graph` readout, not a diagram. */
+.aurora-intro-hero {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 18px 20px 16px;
+  background: var(--page);
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+}
+/* The thesis, in the terminal's own voice — a shell comment. */
+.aurora-intro-comment {
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  color: var(--faint);
+}
+.aurora-intro-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.2;
+}
+/* Root node: the repo the lanes branch from. */
+.aurora-intro-root {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.aurora-intro-mark {
+  color: var(--acd);
+}
+.aurora-intro-repo {
+  color: var(--fg);
+  letter-spacing: 0.01em;
+}
+.aurora-intro-count {
+  margin-left: auto;
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--faint);
+}
+/* One worktree lane. Flex layout (not monospace column-counting) keeps the
+   columns aligned even if a box-drawing glyph falls back to a different width. */
+.aurora-intro-lane {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  animation: rise 0.4s ease both;
+}
+.aurora-intro-branchch {
+  flex: 0 0 auto;
+  color: var(--faint);
+}
+.aurora-intro-dot {
+  flex: 0 0 auto;
+  font-size: 9px;
+  line-height: 1;
+}
+/* The active lane — a glowing, breathing dot, mirroring the rail's live state. */
+.aurora-intro-dot--live {
+  text-shadow: 0 0 7px color-mix(in oklab, var(--ac) 70%, transparent);
+  animation: pulse 1.7s ease-in-out infinite;
+}
+.aurora-intro-key {
+  flex: 0 0 auto;
+  min-width: 58px;
+  color: var(--acd);
+  letter-spacing: 0.01em;
+}
+.aurora-intro-branch {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim);
+}
+.aurora-intro-port {
+  flex: 0 0 auto;
+}
+
+/* Body — eyebrow, title, value props. Scrolls if the panel outgrows a short
+   window (shares the .ascroll vertical scrollbar), keeping the CTA reachable. */
+.aurora-intro-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 22px 6px;
+}
+.aurora-intro-eyebrow {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--acd);
+}
+.aurora-intro-title {
+  margin: 7px 0 0;
+  font-family: var(--sans);
+  font-size: 19px;
+  /* Geist ships 400 + 500 to the app (see index.html); 500 is the heaviest
+     available, so the hero leans on size, not a synthesized bold. */
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+.aurora-intro-props {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.aurora-intro-prop {
+  display: flex;
+  gap: 11px;
+}
+/* Each prop is led by a real Aurora glyph, held in a fixed box so the three
+   different marks (⎇ ▸ ◐) line up down a single column. */
+.aurora-intro-prop-glyph {
+  flex: 0 0 auto;
+  width: 16px;
+  margin-top: 1px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--acd);
+}
+.aurora-intro-prop-title {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.aurora-intro-prop-desc {
+  margin-top: 2px;
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+.aurora-intro-footer {
+  flex: 0 0 auto;
+  padding: 16px 22px 20px;
+}
+/* Rides on .aurora-empty-primary (the app's primary-CTA idiom); this only nudges
+   the size up for the announcement. Defined after it, so these win on the tie. */
+.aurora-intro-cta {
+  padding: 11px 14px;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
+
+/* Reduced motion: the global rule snaps animations to their end, but the lanes'
+   staggered animation-delay would still hold them invisible during the delay.
+   Pin them shown and still instead. */
+@media (prefers-reduced-motion: reduce) {
+  .aurora-intro-lane {
+    animation: none;
+    opacity: 1;
+  }
+  .aurora-intro-dot--live {
+    animation: none;
+  }
+}

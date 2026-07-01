@@ -13,6 +13,7 @@ import { WorkspaceRail, WorkspaceContextBar } from "./components/WorkspaceRail";
 import { WorkspaceCommand } from "./components/WorkspaceCommand";
 import { WorkspaceSettings } from "./components/WorkspaceSettings";
 import { EmptyState } from "./components/EmptyState";
+import { WorkspacesIntro } from "./components/WorkspacesIntro";
 import {
   useStore,
   activePane,
@@ -43,6 +44,7 @@ export default function App() {
   const workspaceSettingsOpen = useStore((s) => s.workspaceSettingsRepo !== null);
   const scriptsSetupOpen = useStore((s) => s.scriptsSetupOpen);
   const commandOpen = useStore((s) => s.command !== null);
+  const introSeen = useStore((s) => s.settings.introSeen);
   const panel = useStore((s) => s.panel);
   const railCollapsed = useStore((s) => s.railCollapsed);
   const apId = useStore((s) => activePane(s)?.id);
@@ -126,7 +128,14 @@ export default function App() {
       }
       startNotificationPoller();
       void checkForUpdates();
-      setTimeout(() => document.getElementById("aurora-root")?.focus(), 0);
+      // Don't steal focus from the intro's "Got it" button on first launch: the
+      // intro mounts and focuses it synchronously, but this boot effect's
+      // setTimeout(0) would otherwise fire after and move focus to #aurora-root.
+      // Re-read introSeen at fire time (not the `settings` closed over above —
+      // it hasn't been updated by dismissIntro yet at this point in boot).
+      setTimeout(() => {
+        if (useStore.getState().settings.introSeen) document.getElementById("aurora-root")?.focus();
+      }, 0);
     })();
   }, []);
 
@@ -277,6 +286,7 @@ export default function App() {
       {settingsOpen && <SettingsModal />}
       {workspaceSettingsOpen && <WorkspaceSettings />}
       {commandOpen && <WorkspaceCommand />}
+      {!introSeen && <WorkspacesIntro />}
     </div>
   );
 }

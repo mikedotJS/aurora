@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { tauri } from "../test/mocks/tauri";
-import { useStore, activeGroup, activeWorkspace, findPane, type PaneState } from "../src/state/store";
+import { useStore, activeGroup, activeWorkspace, findPane, DEFAULT_SETTINGS, type PaneState } from "../src/state/store";
 import { handleKeyDown } from "../src/lib/keymap";
 import type { Suggestion } from "../src/ai/suggest";
 
@@ -74,6 +74,11 @@ beforeEach(() => {
     keyError: null,
     apiKeyPresent: false,
     railCollapsed: false,
+    // The one-time intro dialog guard (top of handleKeyDown) swallows every key
+    // while unseen; these suites cover pre-existing keymap behavior, not the
+    // intro itself, so seed it dismissed. (Intro-specific keymap coverage is a
+    // separate, dedicated describe block.)
+    settings: { ...DEFAULT_SETTINGS, introSeen: true },
   });
 });
 
@@ -1240,5 +1245,67 @@ describe("triggerFolderCompletion", () => {
     handleKeyDown(keyEvt("Tab"));
     await flush();
     expect(tauri.lastCall("list_dir")?.args.path).toBe("/Users/test/proj");
+  });
+});
+
+// ── The one-time "Introducing Workspaces" intro — keyboard-modal guard ─────
+// (workspaces-intro-dialog). The file-level beforeEach seeds introSeen:true
+// so the suites above (pre-existing keymap behavior) aren't gated by it; this
+// describe block overrides introSeen:false per test to cover the guard itself.
+
+describe("handleKeyDown — 'Introducing Workspaces' intro guard (settings.introSeen === false)", () => {
+  beforeEach(() => {
+    useStore.setState({ settings: { ...DEFAULT_SETTINGS, introSeen: false } });
+  });
+
+  it("Escape dismisses the intro (dismissIntro runs) and calls preventDefault, even with no active pane/workspace", () => {
+    useStore.setState({ activeWs: null });
+    const evt = keyEvt("Escape");
+    handleKeyDown(evt);
+    expect(useStore.getState().settings.introSeen).toBe(true);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("Escape dismisses the intro even when e.target is a TEXTAREA (focus landed in the xterm textarea mounted behind the modal on first launch inside a repo) — the intro guard now runs above the form-field early-return", () => {
+    useStore.setState({ activeWs: null });
+    const evt = keyEvt("Escape", { target: { tagName: "TEXTAREA" } });
+    handleKeyDown(evt);
+    expect(useStore.getState().settings.introSeen).toBe(true);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("Escape dismisses the intro even when e.target is an INPUT", () => {
+    useStore.setState({ activeWs: null });
+    const evt = keyEvt("Escape", { target: { tagName: "INPUT" } });
+    handleKeyDown(evt);
+    expect(useStore.getState().settings.introSeen).toBe(true);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("swallows ⌘K: the command palette does not open while the intro is unseen", () => {
+    useStore.setState({ activeWs: null, command: null });
+    handleKeyDown(keyEvt("k", { metaKey: true }));
+    expect(useStore.getState().command).toBeNull();
+    expect(useStore.getState().settings.introSeen).toBe(false); // only Escape dismisses, not other keys
+  });
+
+  it("swallows ⌘,: settings does not open while the intro is unseen", () => {
+    useStore.setState({ activeWs: null, settingsOpen: false });
+    handleKeyDown(keyEvt(",", { metaKey: true }));
+    expect(useStore.getState().settingsOpen).toBe(false);
+  });
+
+  it("swallows ⌘B: the workspace rail does not toggle while the intro is unseen", () => {
+    useStore.setState({ activeWs: null, railCollapsed: false });
+    handleKeyDown(keyEvt("b", { metaKey: true }));
+    expect(useStore.getState().railCollapsed).toBe(false);
+  });
+
+  it("once introSeen is true, the guard is inert: Escape falls through to normal handling (closes the open command palette) instead of re-dismissing", () => {
+    useStore.getState().openCommand();
+    useStore.setState({ settings: { ...DEFAULT_SETTINGS, introSeen: true } });
+    expect(useStore.getState().command).not.toBeNull();
+    handleKeyDown(keyEvt("Escape"));
+    expect(useStore.getState().command).toBeNull();
   });
 });

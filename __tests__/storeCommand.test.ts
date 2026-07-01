@@ -352,3 +352,56 @@ describe("removeWorkspace never drops to the empty state (non-goal guard)", () =
     expect(s.activeWs).toBe(id);
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// introSeen — the one-time "Introducing Workspaces" flag (workspaces-intro-dialog)
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe("introSeen — persisted onboarding flag + dismissIntro()", () => {
+  beforeEach(() => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+  });
+
+  it("fresh install: init() with DEFAULT_SETTINGS (no persisted settings at all) defaults introSeen to false", () => {
+    expect(useStore.getState().settings.introSeen).toBe(false);
+  });
+
+  it("updater path: stored settings predating the flag (App.tsx's boot merge `{ ...DEFAULT_SETTINGS, ...parsed }`) default introSeen to false without dropping other persisted settings", () => {
+    // A pre-upgrade user's stored aurora.settings has no introSeen key at all.
+    const storedFromBeforeThisFeature = { model: "claude-opus-4-8", accent: "amber" };
+    expect("introSeen" in storedFromBeforeThisFeature).toBe(false);
+    const merged = { ...storeMod.DEFAULT_SETTINGS, ...storedFromBeforeThisFeature };
+
+    useStore.getState().init(HOME, merged, false, { repo: null, restored: [], activeWs: null });
+
+    const s = useStore.getState();
+    expect(s.settings.introSeen).toBe(false); // defaulted, not left undefined
+    expect(s.settings.model).toBe("claude-opus-4-8"); // other persisted settings survive the merge
+    expect(s.settings.accent).toBe("amber");
+  });
+
+  it("dismissIntro() sets settings.introSeen to true and persists it to aurora.settings", () => {
+    expect(useStore.getState().settings.introSeen).toBe(false);
+
+    useStore.getState().dismissIntro();
+
+    expect(useStore.getState().settings.introSeen).toBe(true);
+    const raw = localStorage.getItem("aurora.settings");
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!).introSeen).toBe(true);
+  });
+
+  it("dismissIntro() persists introSeen without clobbering other settings already in place", () => {
+    useStore.getState().init(HOME, { ...storeMod.DEFAULT_SETTINGS, accent: "amber" }, false, {
+      repo: null,
+      restored: [],
+      activeWs: null,
+    });
+
+    useStore.getState().dismissIntro();
+
+    const parsed = JSON.parse(localStorage.getItem("aurora.settings")!);
+    expect(parsed.accent).toBe("amber");
+    expect(parsed.introSeen).toBe(true);
+  });
+});

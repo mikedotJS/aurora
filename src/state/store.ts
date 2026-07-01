@@ -38,6 +38,9 @@ export interface Settings {
   notifyMr: boolean;
   /** Auto-rename a tab from the command running in its active pane (quick Haiku call). */
   autoRenameTabs: boolean;
+  /** One-time onboarding state (the "Introducing Workspaces" dialog) — persisted
+   *  with settings so it rides the existing boot pipeline, not a user-facing preference. */
+  introSeen: boolean;
 }
 
 export const MODEL_OPTIONS = [
@@ -53,6 +56,7 @@ export const DEFAULT_SETTINGS: Settings = {
   ghost: true,
   notifyMr: true,
   autoRenameTabs: true,
+  introSeen: false,
 };
 
 export interface Block {
@@ -368,6 +372,9 @@ export interface StoreState {
   setSetting: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
   openSettings: () => void;
   closeSettings: () => void;
+  /** Dismiss the one-time "Introducing Workspaces" dialog: persists introSeen = true
+   *  so it never shows again. */
+  dismissIntro: () => void;
   openPanel: (p: Exclude<PanelKind, null>) => void;
   closePanel: () => void;
   // scripts + hooks
@@ -1166,6 +1173,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+  dismissIntro: () => get().setSetting("introSeen", true),
   openPanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
   closePanel: () => set({ panel: null }),
 

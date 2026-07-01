@@ -201,6 +201,25 @@ async function triggerFolderCompletion(pane: PaneState, tok: PathToken) {
 export function handleKeyDown(e: KeyboardEvent) {
   const s = useStore.getState();
 
+  // The one-time "Introducing Workspaces" dialog is the top-most overlay
+  // (zIndex 100) and keyboard-modal: while it's open (introSeen === false),
+  // every key is swallowed here — only Escape acts, equivalent to "Got it"
+  // (persists + closes). Placed above the form-field guard below so Esc still
+  // dismisses even when focus is inside an input/textarea — e.g. the xterm
+  // textarea mounted behind the intro on first launch inside a repo. Note the
+  // dialog's own focus-trap (WorkspacesIntro.tsx) is what actually keeps
+  // keystrokes from reaching that textarea in the first place; this early
+  // Esc guard is belt-and-braces in case focus ever lands there. Also placed
+  // above the app-level ⌘ block and the `if (!pane) return` bail so Esc
+  // works at first-run with no active pane.
+  if (!s.settings.introSeen) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      s.dismissIntro();
+    }
+    return;
+  }
+
   const tag = (e.target as HTMLElement | null)?.tagName ?? "";
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(tag)) return; // form fields / xterm own these
 
