@@ -56,16 +56,27 @@ export function StatusBar() {
             </span>
           </>
         )}
-        {diff && diff.files > 0 && pane && (
+        {/* Always-available door into the Changes view — the diff summary is only
+            populated for the active workspace and only when the tree differs from
+            base, so gating this on `diff` left committed / base-branch / inactive
+            states with no way in. Shown whenever there's a pane; renders the ±
+            counts when a summary exists, or a plain "Changes" label otherwise. */}
+        {pane && (
           <span
             onClick={() => setPaneView(pane.id, "changes")}
             title="review changes (⌘G)"
             style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
           >
             <span style={{ color: "var(--acd)" }}>⊟</span>
-            {diff.files} changed
-            {diff.added > 0 && <span style={{ color: "var(--acd)" }}>+{diff.added}</span>}
-            {diff.removed > 0 && <span style={{ color: "var(--err)" }}>−{diff.removed}</span>}
+            {diff && diff.files > 0 ? (
+              <>
+                {diff.files} changed
+                {diff.added > 0 && <span style={{ color: "var(--acd)" }}>+{diff.added}</span>}
+                {diff.removed > 0 && <span style={{ color: "var(--err)" }}>−{diff.removed}</span>}
+              </>
+            ) : (
+              "Changes"
+            )}
           </span>
         )}
         {hasScripts && (

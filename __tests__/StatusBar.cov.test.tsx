@@ -140,10 +140,31 @@ describe("StatusBar — merge requests chip", () => {
 });
 
 describe("StatusBar — diff summary", () => {
-  it("hides the diff summary entirely when files is 0", () => {
+  it("still shows a clickable 'Changes' control (no counts) when files is 0", () => {
     const pane = mkPane();
     const ws = mkWorkspace([mkGroup({ panes: [pane] })], { diff: { files: 0, added: 0, removed: 0, conflicted: 0 } });
     seed({ workspaces: [ws], activeWs: ws.id });
+    const { getByTitle } = render(<StatusBar />);
+    const chip = getByTitle("review changes (⌘G)");
+    expect(chip.textContent).toContain("Changes");
+    expect(chip.textContent).not.toContain("changed");
+    fireEvent.click(chip);
+    expect(useStore.getState().workspaces[0].tabs[0].panes[0].view).toBe("changes");
+  });
+
+  it("shows a clickable 'Changes' control even when the diff summary is null (never populated)", () => {
+    const pane = mkPane();
+    const ws = mkWorkspace([mkGroup({ panes: [pane] })], { diff: null });
+    seed({ workspaces: [ws], activeWs: ws.id });
+    const { getByTitle } = render(<StatusBar />);
+    const chip = getByTitle("review changes (⌘G)");
+    expect(chip.textContent).toContain("Changes");
+    fireEvent.click(chip);
+    expect(useStore.getState().workspaces[0].tabs[0].panes[0].view).toBe("changes");
+  });
+
+  it("hides the Changes control only when there is no active pane", () => {
+    seed({ workspaces: [], activeWs: null });
     const { queryByTitle } = render(<StatusBar />);
     expect(queryByTitle("review changes (⌘G)")).toBeNull();
   });

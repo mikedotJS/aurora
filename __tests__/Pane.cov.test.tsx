@@ -212,6 +212,15 @@ describe("Pane — changes view + find bar", () => {
     expect(container.textContent?.toLowerCase()).toContain("changes");
   });
 
+  it("renders ChangesView even when a full-screen program runs (rawMode) — the view overlays the terminal", () => {
+    // Regression: the Changes view used to be gated on !rawMode, so switching to
+    // it while a full-screen program (claude, vim, less…) ran showed nothing.
+    const pane = mkPane({ view: "changes", rawMode: true });
+    setup(pane);
+    const { queryByTitle } = render(<Pane pane={pane} index={0} isActive multiple={false} />);
+    expect(queryByTitle("back to terminal (⌥⌘D)")).toBeTruthy();
+  });
+
   it("renders FindBar when find is open on the active pane", () => {
     const pane = mkPane({ blocks: [mkBlock({ output: "x\n" })] });
     setup(pane, { find: { open: true, query: "x", current: 0 } });

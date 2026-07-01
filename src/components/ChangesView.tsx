@@ -158,7 +158,10 @@ export function ChangesView({ paneId }: { paneId: number }) {
   };
 
   return (
-    <div style={{ position: "absolute", inset: 0, zIndex: 1, display: "flex", background: "var(--win)" }}>
+    // zIndex 5 keeps this above the xterm overlay (z-index 2 while a full-screen
+    // program runs) and the "interactive" badge (z-index 3), so the Changes view
+    // is fully visible even when the pane's terminal is in rawMode.
+    <div style={{ position: "absolute", inset: 0, zIndex: 5, display: "flex", background: "var(--win)" }}>
       {/* files list */}
       <div style={{ flex: "0 0 230px", display: "flex", flexDirection: "column", borderRight: "1px solid var(--line)", minWidth: 0 }}>
         <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderBottom: "1px solid var(--line)", fontFamily: "var(--sans)" }}>

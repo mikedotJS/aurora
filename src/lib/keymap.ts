@@ -335,6 +335,15 @@ export function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
+  // The Changes view owns its pane: app shortcuts (⌘…) already ran above; here we
+  // only let Esc drop back to the terminal and swallow every other key so neither
+  // the hidden prompt nor a full-screen program (rawMode) underneath is touched.
+  // Checked before the ⌃ block so control keys can't leak to the program behind it.
+  if (pane.view === "changes") {
+    if (k === "Escape") return void (e.preventDefault(), s.setPaneView(pane.id, "terminal"));
+    return;
+  }
+
   // ⌃ — terminal control codes forwarded to the foreground process (^C ^D ^Z …)
   if (e.ctrlKey && !e.altKey && !e.metaKey) {
     if (k === "l" || k === "L") {
@@ -350,14 +359,6 @@ export function handleKeyDown(e: KeyboardEvent) {
       if (k === "c" || k === "C") s.setInput(pane.id, "");
       return;
     }
-    return;
-  }
-
-  // The Changes view owns its pane: app shortcuts (⌘…) already ran above; here we
-  // only let Esc drop back to the terminal and swallow prompt-editing keys so the
-  // hidden prompt underneath isn't touched.
-  if (pane.view === "changes" && !pane.rawMode) {
-    if (k === "Escape") return void (e.preventDefault(), s.setPaneView(pane.id, "terminal"));
     return;
   }
 

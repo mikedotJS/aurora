@@ -468,12 +468,27 @@ describe("handleKeyDown — changes view", () => {
     expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   });
 
-  it("rawMode bypasses the changes-view swallow entirely", () => {
+  it("the Changes view owns its keys even in rawMode: Escape exits, other keys are swallowed", () => {
+    // The Changes view overlays the pane's terminal, so it must intercept keys
+    // even when a full-screen program (rawMode) runs underneath — otherwise you
+    // can't leave the view and keystrokes leak to the hidden program.
     const id = mkPane();
     useStore.getState().setPaneView(id, "changes");
     useStore.getState().setRawMode(id, true);
+
+    // a control key that would otherwise be forwarded to the PTY is swallowed
+    withPty(id);
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    expect(pane(id).input).toBe("");
+    expect(tauri.lastCall("pty_write")).toBeUndefined();
+
+    // a plain key does nothing to the hidden prompt
     handleKeyDown(keyEvt("x"));
-    expect(pane(id).input).toBe("x"); // fell through to the bottom char-append branch
+    expect(pane(id).input).toBe("");
+
+    // Escape drops back to the terminal
+    handleKeyDown(keyEvt("Escape"));
+    expect(pane(id).view).toBe("terminal");
   });
 });
 
