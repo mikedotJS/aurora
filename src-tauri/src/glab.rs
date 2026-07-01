@@ -37,7 +37,14 @@ pub fn glab_mr_list(cwd: String) -> Result<Vec<MrItem>, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(&stdout).map_err(|e| e.to_string())?;
+    parse_mr_list(&stdout)
+}
+
+/// Parse `glab mr list --output json`'s stdout into the UI's `MrItem` shape.
+/// Extracted from `glab_mr_list` so the mapping can be unit-tested without
+/// spawning the real `glab` CLI.
+fn parse_mr_list(stdout: &str) -> Result<Vec<MrItem>, String> {
+    let parsed: Value = serde_json::from_str(stdout).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     if let Some(list) = parsed.as_array() {
         for mr in list {
@@ -81,7 +88,14 @@ pub fn glab_current_user(cwd: String) -> Result<String, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: Value = serde_json::from_str(&stdout).map_err(|e| e.to_string())?;
+    parse_username(&stdout)
+}
+
+/// Parse `glab api user`'s stdout into the authenticated username. Extracted
+/// from `glab_current_user` so the mapping can be unit-tested without
+/// spawning the real `glab` CLI.
+fn parse_username(stdout: &str) -> Result<String, String> {
+    let parsed: Value = serde_json::from_str(stdout).map_err(|e| e.to_string())?;
     parsed["username"]
         .as_str()
         .map(|s| s.to_string())
@@ -106,5 +120,96 @@ pub fn glab_mr_create(cwd: String, branch: String) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("glab: {}", String::from_utf8_lossy(&output.stderr).trim()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_mr_list, parse_username};
+
+    // ── parse_mr_list ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_mr_list_maps_all_fields() {
+        let json = r#"[{
+            "iid": 42,
+            "title": "Fix login bug",
+            "source_branch": "fix/login",
+            "draft": true,
+            "author": { "username": "mike" },
+            "web_url": "https://gitlab.example.com/mr/42",
+            "updated_at": "2026-06-30T10:00:00Z"
+        }]"#;
+        let out = parse_mr_list(json).unwrap();
+        assert_eq!(out.len(), 1);
+        let mr = &out[0];
+        assert_eq!(mr.iid, 42);
+        assert_eq!(mr.title, "Fix login bug");
+        assert_eq!(mr.branch, "fix/login");
+        assert!(mr.draft);
+        assert_eq!(mr.author, "mike");
+        assert_eq!(mr.web_url, "https://gitlab.example.com/mr/42");
+        assert_eq!(mr.updated, "2026-06-30T10:00:00Z");
+    }
+
+    #[test]
+    fn parse_mr_list_defaults_missing_fields() {
+        let json = r#"[{}]"#;
+        let out = parse_mr_list(json).unwrap();
+        assert_eq!(out.len(), 1);
+        let mr = &out[0];
+        assert_eq!(mr.iid, 0);
+        assert_eq!(mr.title, "");
+        assert_eq!(mr.branch, "");
+        assert!(!mr.draft);
+        assert_eq!(mr.author, "");
+        assert_eq!(mr.web_url, "");
+        assert_eq!(mr.updated, "");
+    }
+
+    #[test]
+    fn parse_mr_list_empty_array_is_empty_vec() {
+        assert!(parse_mr_list("[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_mr_list_non_array_root_yields_empty_vec() {
+        // `glab` should always emit an array, but a stray object response
+        // degrades to an empty list rather than panicking.
+        assert!(parse_mr_list(r#"{"not":"an array"}"#).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_mr_list_malformed_json_is_an_error() {
+        assert!(parse_mr_list("not json").is_err());
+    }
+
+    #[test]
+    fn parse_mr_list_multiple_entries_preserve_order() {
+        let json = r#"[
+            {"iid": 1, "title": "first"},
+            {"iid": 2, "title": "second"}
+        ]"#;
+        let out = parse_mr_list(json).unwrap();
+        assert_eq!(out.iter().map(|m| m.iid).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(out[0].title, "first");
+        assert_eq!(out[1].title, "second");
+    }
+
+    // ── parse_username ───────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_username_extracts_username() {
+        assert_eq!(parse_username(r#"{"username":"mike"}"#).unwrap(), "mike");
+    }
+
+    #[test]
+    fn parse_username_missing_field_is_an_error() {
+        assert!(parse_username(r#"{"id": 1}"#).is_err());
+    }
+
+    #[test]
+    fn parse_username_malformed_json_is_an_error() {
+        assert!(parse_username("not json").is_err());
     }
 }

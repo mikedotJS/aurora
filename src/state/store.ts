@@ -243,7 +243,11 @@ export interface CreateWorkspaceOpts {
 export interface StoreState {
   repos: Repo[];
   workspaces: Workspace[];
-  activeWs: string;
+  activeWs: string | null;
+  /** True once `init` has run to completion — distinguishes "boot not finished"
+   *  (nothing should render as active yet) from "boot finished with zero
+   *  workspaces" (the empty state is a legitimate, settled outcome). */
+  initialized: boolean;
   railCollapsed: boolean;
   wsFilter: string;
   /** ⌘K command palette (switch + create). Null when closed. */
@@ -565,7 +569,7 @@ function patchPane(workspaces: Workspace[], paneId: number, patch: PanePatch): W
 /** Apply a tab-strip mutation to the active workspace, returning the new list. */
 function patchActiveWs(
   workspaces: Workspace[],
-  activeWs: string,
+  activeWs: string | null,
   fn: (w: Workspace) => Partial<Workspace>,
 ): Workspace[] {
   return workspaces.map((w) => (w.id === activeWs ? { ...w, ...fn(w) } : w));
@@ -595,7 +599,8 @@ function recomputeGhost(p: PaneState, ghostEnabled: boolean): string {
 export const useStore = create<StoreState>((set, get) => ({
   repos: [],
   workspaces: [],
-  activeWs: "",
+  activeWs: null,
+  initialized: false,
   railCollapsed: false,
   wsFilter: "",
   command: null,
@@ -629,19 +634,25 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const workspaces: Workspace[] = boot.restored.map(rehydrate);
 
-    // The boot workspace: the cwd's repo checkout, or a manual lane. Reuse a
-    // restored workspace if one already lives in the same directory.
-    const bootDir = boot.repo ? boot.repo.root : home;
-    let bootWs = workspaces.find((w) => w.dir === bootDir);
-    if (!bootWs) {
-      bootWs = newWorkspace({
-        repoId: boot.repo ? boot.repo.root : null,
-        title: boot.repo ? (boot.repo.currentBranch ?? boot.repo.name) : baseName(home) || "~",
-        dir: bootDir,
-        branch: boot.repo ? (boot.repo.currentBranch ?? boot.repo.defaultBranch) : null,
-        baseBranch: boot.repo ? boot.repo.defaultBranch : "",
-      });
-      workspaces.unshift(bootWs);
+    // The boot workspace only exists for a real repo checkout (boot.repo set) —
+    // a repo launch is a real context worth opening. Reuse a restored workspace
+    // already rooted at that repo, else create one. When there is no repo
+    // context, NO lane is synthesized (no manual/home fallback) — an empty boot
+    // (0 repo context, 0 restored) legitimately settles on zero workspaces.
+    let bootWs: Workspace | undefined;
+    if (boot.repo) {
+      const bootDir = boot.repo.root;
+      bootWs = workspaces.find((w) => w.dir === bootDir);
+      if (!bootWs) {
+        bootWs = newWorkspace({
+          repoId: boot.repo.root,
+          title: boot.repo.currentBranch ?? boot.repo.name,
+          dir: bootDir,
+          branch: boot.repo.currentBranch ?? boot.repo.defaultBranch,
+          baseBranch: boot.repo.defaultBranch,
+        });
+        workspaces.unshift(bootWs);
+      }
     }
 
     // Persisted repos (added by folder, may have no workspaces) first, then the
@@ -652,12 +663,18 @@ export const useStore = create<StoreState>((set, get) => ({
       : persisted;
     const repos = deriveRepos(workspaces, extra);
 
-    const activeWs =
-      boot.activeWs && workspaces.some((w) => w.id === boot.activeWs) ? boot.activeWs : bootWs.id;
+    // activeWs: a valid restored/boot activeWs wins, else the boot lane, else the
+    // first restored workspace (restored, no repo launch, stale activeWs), else
+    // null — 0 repo context + 0 restored is the empty state.
+    const activeWs: string | null =
+      boot.activeWs && workspaces.some((w) => w.id === boot.activeWs)
+        ? boot.activeWs
+        : (bootWs?.id ?? workspaces[0]?.id ?? null);
     // Mount only the active workspace at boot; others spawn on first activation.
+    // (activeWs === null → every workspace, if any, stays unmounted.)
     for (const w of workspaces) w.mounted = w.id === activeWs;
 
-    set({ home, settings, apiKeyPresent, repos, workspaces, activeWs });
+    set({ home, settings, apiKeyPresent, repos, workspaces, activeWs, initialized: true });
     savePersisted(workspaces, activeWs);
   },
 

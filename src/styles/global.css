@@ -165,3 +165,16 @@ select {
 .aurora-term .xterm-viewport::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* Status bar keyboard-hint group. display:flex is set here (not inline) so the
+   @media rule below can override it to none. Inline styles cannot be targeted by
+   media queries — moving display ownership to CSS is the only safe approach. */
+.aurora-statusbar-hints {
+  display: flex;
+  align-items: center;
+}
+@media (max-width: 840px) {
+  .aurora-statusbar-hints {
+    display: none;
+  }
+}

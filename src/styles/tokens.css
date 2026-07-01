@@ -23,6 +23,11 @@
 
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: "Geist", system-ui, -apple-system, sans-serif;
+
+  /* Responsive breakpoints — documentary only; CSS custom properties cannot be
+     used inside @media conditions, so 840px appears literally in @media rules
+     and in the matchMedia hook (useMediaQuery.ts). */
+  --bp-narrow: 840px;
 }
 
 * {
@@ -87,4 +92,26 @@
 }
 .ascroll::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Horizontal scroll regions — the tab list (TabStrip) and the port pill
+   (WorkspaceRail). These reuse the same overflow wrappers but must scroll
+   sideways WITHOUT showing a horizontal bar. In WebKit/WKWebView, styling
+   ::-webkit-scrollbar at all opts the element into a classic, space-reserving
+   (non-overlay) scrollbar — so the inherited .ascroll rule reserves a ~9px-tall
+   gutter under the row. That gutter shifts the scrolled row out of vertical
+   alignment with the pinned controls sitting beside it (the +/⊟ tab buttons,
+   the Run/Stop toggle), which live in a separate region with no scrollbar.
+   Hiding the bar reclaims the gutter deterministically (independent of the macOS
+   "Show scroll bars" setting) while leaving scrollability intact: trackpad swipe,
+   shift-wheel, drag, and scrollIntoView() all still pan the row, so tabs/ports
+   are never clipped. The shared vertical scrollbars (xterm viewport, sheets,
+   modals) are untouched because they key off .ascroll, never .ascroll-x. */
+.ascroll-x {
+  scrollbar-width: none; /* Firefox/standards; WebKit ignores it, harmless */
+}
+.ascroll-x::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }

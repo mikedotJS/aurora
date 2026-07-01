@@ -67,7 +67,7 @@ export function loadPersisted(): { workspaces: PersistedWs[]; activeWs: string |
   }
 }
 
-export function savePersisted(workspaces: Workspace[], activeWs: string): void {
+export function savePersisted(workspaces: Workspace[], activeWs: string | null): void {
   try {
     const ws: PersistedWs[] = workspaces.map((w) => ({
       id: w.id,

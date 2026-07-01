@@ -1,0 +1,820 @@
+// Coverage suite for src/components/WorkspaceRail.tsx.
+//
+// Three of WorkspaceRail's collaborators are mocked at the module level (like
+// teardown.test.ts does for lib/worktree) rather than driven purely through
+// tauri.invoke():
+//   - lib/repo    (addRepoFromFolder) wraps @tauri-apps/plugin-dialog's `open`,
+//     which the shared mock hardcodes to resolve `null` — there is no way to
+//     reach the ok:true/ok:false branches through the real dialog, so we
+//     control addRepoFromFolder's return value directly.
+//   - lib/teardown (deleteWorkspace) has its own guard/removability logic
+//     that's already covered by teardown.test.ts; here we only need to
+//     control its ok/error result to exercise WorkspaceRail's own
+//     notify-on-failure branch.
+//   - lib/servers (serversUp/runServers/stopServers) is a whole orchestrator
+//     (pane creation, script launch, liveness poll) that's out of scope for
+//     this file; we only need serversUp()'s boolean and to observe
+//     runServers/stopServers being invoked (and simulate rejection) from the
+//     Run/Stop button handler in WorkspaceContextBar.
+//
+// Everything else (worktreeSafety, worktreeList, pathResolve — all backed by
+// a single invoke() call) is driven for real through the shared tauri mock.
+import { mock, describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { render, fireEvent, cleanup, waitFor, within } from "@testing-library/react";
+import { tauri } from "../test/mocks/tauri";
+
+// ---- Controllable mocks (must precede the dynamic import below) -----------
+
+let addRepoCalls = 0;
+let addRepoImpl: () => Promise<unknown> = () => Promise.resolve({ cancelled: true });
+mock.module("../src/lib/repo", () => ({
+  addRepoFromFolder: () => {
+    addRepoCalls++;
+    return addRepoImpl();
+  },
+}));
+
+let deleteWorkspaceCalls: string[] = [];
+let deleteWorkspaceResult: { ok: true } | { ok: false; error: string } = { ok: true };
+mock.module("../src/lib/teardown", () => ({
+  deleteWorkspace: (id: string) => {
+    deleteWorkspaceCalls.push(id);
+    return Promise.resolve(deleteWorkspaceResult);
+  },
+}));
+
+let serversUpValue = false;
+const serversCalls: Array<{ fn: "run" | "stop"; wsId: string }> = [];
+let runServersImpl: (id: string) => Promise<void> = () => Promise.resolve();
+let stopServersImpl: (id: string) => Promise<void> = () => Promise.resolve();
+mock.module("../src/lib/servers", () => ({
+  serversUp: () => serversUpValue,
+  runServers: (id: string) => {
+    serversCalls.push({ fn: "run", wsId: id });
+    return runServersImpl(id);
+  },
+  stopServers: (id: string) => {
+    serversCalls.push({ fn: "stop", wsId: id });
+    return stopServersImpl(id);
+  },
+}));
+
+const { useStore } = await import("../src/state/store");
+const { WorkspaceRail, WorkspaceContextBar, StatusDot } = await import(
+  "../src/components/WorkspaceRail"
+);
+type Workspace = InstanceType<typeof Object> & Record<string, unknown>;
+
+// ---- Fixture builders -------------------------------------------------------
+
+let paneSeq = 1;
+let groupSeq = 1;
+let wsIdx = 0;
+
+function makePane(overrides: Record<string, unknown> = {}) {
+  return {
+    id: paneSeq++,
+    ptyId: null,
+    ptyEpoch: 0,
+    isZsh: false,
+    cwd: "/repo",
+    branch: null,
+    input: "",
+    ghost: "",
+    history: [],
+    hIndex: -1,
+    suggestion: null,
+    suggestionLoading: false,
+    pendingFix: null,
+    completion: null,
+    inputSelected: false,
+    rawMode: false,
+    view: "terminal",
+    exited: false,
+    ready: false,
+    dirNames: [],
+    blocks: [],
+    repoRoot: null,
+    firedHooks: [],
+    hook: null,
+    ...overrides,
+  };
+}
+
+function makeGroup(overrides: Record<string, unknown> = {}) {
+  const panes = (overrides.panes as unknown[]) ?? [makePane()];
+  return { id: groupSeq++, active: 0, split: "h", ...overrides, panes };
+}
+
+function makeWorkspace(overrides: Record<string, unknown> = {}): Workspace {
+  const id = (overrides.id as string) ?? `w${++wsIdx}`;
+  const dir = (overrides.dir as string) ?? "/repo";
+  const pane = makePane({ cwd: dir });
+  const group = makeGroup({ panes: [pane] });
+  return {
+    id,
+    repoId: null,
+    title: "Workspace",
+    issueKey: null,
+    branch: null,
+    baseBranch: "main",
+    dir,
+    preset: null,
+    diff: null,
+    mr: null,
+    pipeline: null,
+    jiraStatus: null,
+    jiraUrl: null,
+    jiraSync: false,
+    env: {},
+    mounted: true,
+    tabs: [group],
+    active: 0,
+    createdAt: Date.now(),
+    lastActive: Date.now(),
+    serverTabId: null,
+    ...overrides,
+  } as Workspace;
+}
+
+function seed(overrides: Record<string, unknown> = {}) {
+  useStore.setState(
+    {
+      repos: [],
+      workspaces: [],
+      activeWs: null,
+      initialized: true,
+      wsFilter: "",
+      command: null,
+      userScripts: {},
+      serverStatus: {},
+      workspaceSettingsRepo: null,
+      settingsOpen: false,
+      notifs: [],
+      notifLog: [],
+      unseen: 0,
+      muted: false,
+      railCollapsed: false,
+      ...overrides,
+    },
+    false,
+  );
+}
+
+/** A registered repo — WorkspaceRail only renders repoId-linked workspaces that
+ *  appear in the `repos` list (repos not yet in that list are silently dropped
+ *  from the rail, even though the workspace count badge still counts them). */
+const REPO = { id: "/repo", root: "/repo", name: "repo", defaultBranch: "main" };
+
+// A microtask + macrotask flush for the async worktreeBacked effect.
+async function flush() {
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+}
+
+let confirmMock: ReturnType<typeof mock>;
+
+beforeEach(() => {
+  tauri.reset();
+  addRepoCalls = 0;
+  addRepoImpl = () => Promise.resolve({ cancelled: true });
+  deleteWorkspaceCalls = [];
+  deleteWorkspaceResult = { ok: true };
+  serversUpValue = false;
+  serversCalls.length = 0;
+  runServersImpl = () => Promise.resolve();
+  stopServersImpl = () => Promise.resolve();
+  confirmMock = mock(() => true);
+  (globalThis as unknown as { confirm: unknown }).confirm = confirmMock;
+  seed();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+// ── StatusDot ────────────────────────────────────────────────────────────────
+
+describe("StatusDot", () => {
+  it("renders idle (no glow, no animation)", () => {
+    const ws = makeWorkspace({ pipeline: null, diff: null });
+    const { container } = render(<StatusDot ws={ws as never} />);
+    const dot = container.querySelector("span") as HTMLElement;
+    expect(dot.style.boxShadow).toBe("none");
+  });
+
+  it("renders attention on a failed pipeline", () => {
+    const ws = makeWorkspace({ pipeline: "failed" });
+    const { container } = render(<StatusDot ws={ws as never} />);
+    const dot = container.querySelector("span") as HTMLElement;
+    expect(dot.style.boxShadow).not.toBe("none");
+  });
+
+  it("renders attention on a conflicted diff", () => {
+    const ws = makeWorkspace({ diff: { files: 1, added: 0, removed: 0, conflicted: 2 } });
+    const { container } = render(<StatusDot ws={ws as never} size={12} />);
+    const dot = container.querySelector("span") as HTMLElement;
+    expect(dot.style.width).toBe("12px");
+    expect(dot.style.boxShadow).not.toBe("none");
+  });
+});
+
+// ── WorkspaceRail: empty states + repo groups ──────────────────────────────
+
+describe("WorkspaceRail — empty & repo groups", () => {
+  it("shows 'no workspaces yet' with zero repos/workspaces and no filter", () => {
+    seed();
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain("no workspaces yet");
+  });
+
+  it("shows 'no workspace matches' when filtered to nothing", () => {
+    seed({ wsFilter: "zzz" });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain('no workspace matches "zzz"');
+  });
+
+  it("shows an empty repo group with a '+ New workspace' row, and clicking it opens the command palette pinned to that repo", () => {
+    const repo = { id: "/r1", root: "/r1", name: "repo-one", defaultBranch: "main" };
+    seed({ repos: [repo] });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain("repo-one");
+    const row = within(container).getByText("+ New workspace in repo-one");
+    fireEvent.click(row);
+    expect(useStore.getState().command).toEqual({ query: "", sel: 0, repoId: "/r1" });
+  });
+
+  it("repo header gear opens workspace settings for that repo; plus opens the command palette", () => {
+    const repo = { id: "/r1", root: "/r1", name: "repo-one", defaultBranch: "main" };
+    seed({ repos: [repo] });
+    const { container } = render(<WorkspaceRail />);
+    const gear = container.querySelector('[title="repo settings"]') as HTMLElement;
+    expect(gear).toBeTruthy();
+    fireEvent.click(gear);
+    expect(useStore.getState().workspaceSettingsRepo).toBe("/r1");
+
+    const plus = container.querySelector('[title="new workspace in this repo"]') as HTMLElement;
+    fireEvent.click(plus);
+    expect(useStore.getState().command).toEqual({ query: "", sel: 0, repoId: "/r1" });
+  });
+
+  it("a manual-lane (local) workspace group has no repo-settings gear", () => {
+    const w = makeWorkspace({ id: "wlocal", repoId: null, title: "manual lane" });
+    seed({ workspaces: [w], activeWs: w.id });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain("local");
+    expect(container.querySelector('[title="repo settings"]')).toBeNull();
+  });
+
+  it("typing in the filter box updates wsFilter, and the collapse button collapses the rail", () => {
+    const { container } = render(<WorkspaceRail />);
+    const input = container.querySelector('input[placeholder="Filter…"]') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "abc" } });
+    expect(useStore.getState().wsFilter).toBe("abc");
+
+    const collapse = container.querySelector('[title="collapse rail (⌘B)"]') as HTMLElement;
+    expect(useStore.getState().railCollapsed).toBe(false);
+    fireEvent.click(collapse);
+    expect(useStore.getState().railCollapsed).toBe(true);
+  });
+
+  it("renders one card per workspace inside a populated repo group", () => {
+    const repo = { id: "/r1", root: "/r1", name: "repo-one", defaultBranch: "main" };
+    const w1 = makeWorkspace({ id: "w1", repoId: "/r1", title: "Alpha" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/r1", title: "Beta" });
+    seed({ repos: [repo], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.querySelectorAll(".aurora-ws-card").length).toBe(2);
+    expect(container.textContent).toContain("Alpha");
+    expect(container.textContent).toContain("Beta");
+  });
+});
+
+// ── WorkspaceRail: filtering ────────────────────────────────────────────────
+
+describe("WorkspaceRail — filtering", () => {
+  it("matches on issueKey, title, or branch independently, and hides repos with zero matches while filtered", () => {
+    const repoA = { id: "/a", root: "/a", name: "repoA", defaultBranch: "main" };
+    const repoB = { id: "/b", root: "/b", name: "repoB", defaultBranch: "main" };
+    const byIssue = makeWorkspace({ id: "w1", repoId: "/a", title: "nomatch", issueKey: "ABC-1", branch: null });
+    const byTitle = makeWorkspace({ id: "w2", repoId: "/a", title: "findme-title", issueKey: null, branch: null });
+    const byBranch = makeWorkspace({ id: "w3", repoId: "/a", title: "nomatch2", issueKey: null, branch: "findme-branch" });
+    const noMatchB = makeWorkspace({ id: "w4", repoId: "/b", title: "other", issueKey: null, branch: null });
+    seed({ repos: [repoA, repoB], workspaces: [byIssue, byTitle, byBranch, noMatchB], activeWs: "w1", wsFilter: "findme" });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain("findme-title");
+    expect(container.textContent).toContain("findme-branch");
+    // repoB has no matches and the filter is active -> its group is dropped entirely.
+    expect(container.textContent).not.toContain("repoB");
+  });
+
+  it("matching on issueKey works even when title/branch are null", () => {
+    const repoA = { id: "/a", root: "/a", name: "repoA", defaultBranch: "main" };
+    const w = makeWorkspace({ id: "w1", repoId: "/a", title: "plain", issueKey: "XYZ-9", branch: null });
+    seed({ repos: [repoA], workspaces: [w], activeWs: "w1", wsFilter: "xyz-9" });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain("XYZ-9");
+  });
+});
+
+// ── WorkspaceCard: content variety (rendered through WorkspaceRail) ────────
+
+describe("WorkspaceCard — content branches", () => {
+  it("shows issueKey, branch, jira chip and port chip when present; omits them when absent", () => {
+    const withMeta = makeWorkspace({
+      id: "w1",
+      title: "With meta",
+      issueKey: "PROJ-42",
+      branch: "feat/x",
+      jiraStatus: "In Progress",
+      env: { AURORA_PORT_OFFSET: "7" },
+    });
+    const bare = makeWorkspace({ id: "w2", title: "Bare", issueKey: null, branch: null, jiraStatus: null, env: {} });
+    seed({ workspaces: [withMeta, bare], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.textContent).toContain("PROJ-42");
+    expect(container.textContent).toContain("feat/x");
+    expect(container.textContent).toContain("In Progress");
+    expect(container.querySelector(".aurora-ws-port-chip")).toBeTruthy();
+
+    const cards = container.querySelectorAll(".aurora-ws-card");
+    const bareCard = cards[1] as HTMLElement;
+    expect(bareCard.textContent).not.toContain("undefined");
+    expect(bareCard.querySelector(".aurora-ws-port-chip")).toBeNull();
+  });
+
+  it("hides the diff chip when both added and removed are zero, and when diff is null", () => {
+    const zeroDiff = makeWorkspace({ id: "w1", diff: { files: 0, added: 0, removed: 0, conflicted: 0 } });
+    const nullDiff = makeWorkspace({ id: "w2", diff: null });
+    seed({ workspaces: [zeroDiff, nullDiff], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    expect(container.querySelector('[title="review changes"]')).toBeNull();
+  });
+
+  it("clicking the diff chip switches workspace and sets the pane view to 'changes' exactly once (stopPropagation works)", () => {
+    const w = makeWorkspace({
+      id: "w1",
+      title: "Has diff",
+      diff: { files: 3, added: 5, removed: 2, conflicted: 0 },
+    });
+    const other = makeWorkspace({ id: "w2", title: "Other" });
+    seed({ workspaces: [w, other], activeWs: "w2" });
+
+    const switchSpy = mock((id: string) => realSwitch(id));
+    const realSwitch = useStore.getState().switchWorkspace;
+    useStore.setState({ switchWorkspace: switchSpy as never }, false);
+
+    const { container } = render(<WorkspaceRail />);
+    const chip = container.querySelector('[title="review changes"]') as HTMLElement;
+    expect(chip.textContent).toContain("+5");
+    expect(chip.textContent).toContain("−2");
+    fireEvent.click(chip);
+
+    // stopPropagation means the outer card's onClick(switchWorkspace) must NOT
+    // also fire — only the one call made by openChanges itself.
+    expect(switchSpy).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().activeWs).toBe("w1");
+    const updated = useStore.getState().workspaces.find((x) => x.id === "w1")!;
+    const pane = updated.tabs[updated.active].panes[updated.tabs[updated.active].active];
+    expect(pane.view).toBe("changes");
+  });
+
+  it("clicking an inactive card switches the active workspace", () => {
+    const w1 = makeWorkspace({ id: "w1", title: "One" });
+    const w2 = makeWorkspace({ id: "w2", title: "Two" });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    const cards = container.querySelectorAll(".aurora-ws-card");
+    expect((cards[0] as HTMLElement).style.cursor).toBe("default");
+    expect((cards[1] as HTMLElement).style.cursor).toBe("pointer");
+    fireEvent.click(cards[1]);
+    expect(useStore.getState().activeWs).toBe("w2");
+  });
+});
+
+// ── WorkspaceCard: worktreeBacked / trash / handleDelete ───────────────────
+
+describe("WorkspaceCard — trash visibility (worktreeBacked)", () => {
+  it("never shows trash for the main checkout (dir === repoId)", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo/.worktrees/w2" });
+    tauri.invoke({
+      worktree_list: () => [{ path: "/repo", branch: "main", head: null }, { path: "/repo/.worktrees/w2", branch: "b", head: null }],
+      path_resolve: (a: Record<string, unknown>) => a.path,
+    });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    await flush();
+    const cards = container.querySelectorAll(".aurora-ws-card");
+    expect((cards[0] as HTMLElement).querySelector(".aurora-ws-trash")).toBeNull();
+  });
+
+  it("never shows trash for a manual lane (repoId null)", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: null, dir: "/manual", title: "Manual lane" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo/.worktrees/w2", title: "Repo card" });
+    tauri.invoke({ worktree_list: () => [{ path: "/repo" }, { path: "/repo/.worktrees/w2" }], path_resolve: (a: Record<string, unknown>) => a.path });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    await flush();
+    const cards = Array.from(container.querySelectorAll(".aurora-ws-card")) as HTMLElement[];
+    const manualCard = cards.find((c) => c.textContent?.includes("Manual lane"))!;
+    expect(manualCard).toBeTruthy();
+    expect(manualCard.querySelector(".aurora-ws-trash")).toBeNull();
+  });
+
+  it("hides trash on the last remaining workspace even if worktree-backed", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo/.worktrees/w1" });
+    tauri.invoke({ worktree_list: () => [{ path: "/repo" }, { path: "/repo/.worktrees/w1" }], path_resolve: (a: Record<string, unknown>) => a.path });
+    seed({ workspaces: [w1], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    await flush();
+    expect(container.querySelector(".aurora-ws-trash")).toBeNull();
+  });
+
+  it("shows trash once the async worktree-registry check confirms a secondary worktree", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo/.worktrees/w1" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo" });
+    tauri.invoke({ worktree_list: () => [{ path: "/repo" }, { path: "/repo/.worktrees/w1" }], path_resolve: (a: Record<string, unknown>) => a.path });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => {
+      expect(container.querySelector(".aurora-ws-trash")).toBeTruthy();
+    });
+  });
+
+  it("flips the sync guess off when the registry check says the dir isn't a registered secondary worktree", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo/.worktrees/gone" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo" });
+    // list does NOT contain "/repo/.worktrees/gone" among the secondaries.
+    tauri.invoke({ worktree_list: () => [{ path: "/repo" }, { path: "/repo/.worktrees/other" }], path_resolve: (a: Record<string, unknown>) => a.path });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => {
+      const cards = container.querySelectorAll(".aurora-ws-card");
+      expect((cards[0] as HTMLElement).querySelector(".aurora-ws-trash")).toBeNull();
+    });
+  });
+
+  it("swallows malformed worktree_list entries via the effect's catch (no crash)", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo/.worktrees/w1" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo" });
+    // A null entry among the secondaries makes `wt.path` throw inside .some(),
+    // which is caught by the effect's outer .catch (keeps the sync guess).
+    tauri.invoke({ worktree_list: () => [{ path: "/repo" }, null], path_resolve: (a: Record<string, unknown>) => a.path });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    expect(() => render(<WorkspaceRail />)).not.toThrow();
+    await flush();
+  });
+
+  it("does not crash or update state after unmounting before the worktree check resolves (cancelled cleanup)", async () => {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo/.worktrees/w1" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo" });
+    let resolveList!: (v: unknown) => void;
+    tauri.invoke({
+      worktree_list: () => new Promise((res) => (resolveList = res)),
+      path_resolve: (a: Record<string, unknown>) => a.path,
+    });
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { unmount } = render(<WorkspaceRail />);
+    unmount();
+    resolveList([{ path: "/repo" }, { path: "/repo/.worktrees/w1" }]);
+    await flush();
+    // No assertion beyond "didn't throw" — React would warn/throw on a
+    // post-unmount state update if the `cancelled` guard were missing.
+  });
+});
+
+describe("WorkspaceCard — handleDelete", () => {
+  function backedPair() {
+    const w1 = makeWorkspace({ id: "w1", repoId: "/repo", dir: "/repo/.worktrees/w1", title: "Doomed", branch: "feat/doomed" });
+    const w2 = makeWorkspace({ id: "w2", repoId: "/repo", dir: "/repo" });
+    tauri.invoke({
+      worktree_list: () => [{ path: "/repo" }, { path: "/repo/.worktrees/w1" }],
+      path_resolve: (a: Record<string, unknown>) => a.path,
+    });
+    return [w1, w2];
+  }
+
+  it("does not call deleteWorkspace when the confirm dialog is dismissed", async () => {
+    confirmMock.mockImplementation(() => false);
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    tauri.invoke({ git_worktree_safety: () => ({ dirty: false, ahead: 0, has_upstream: true }) });
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    expect(deleteWorkspaceCalls.length).toBe(0);
+  });
+
+  it("clicking trash does not also switch the active workspace (stopPropagation)", async () => {
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w2" });
+    tauri.invoke({ git_worktree_safety: () => ({ dirty: false, ahead: 0, has_upstream: true }) });
+    confirmMock.mockImplementation(() => false);
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    expect(useStore.getState().activeWs).toBe("w2");
+  });
+
+  it("builds the confirm message with plural dirty+ahead wording and calls deleteWorkspace; success path does not notify", async () => {
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    tauri.invoke({ git_worktree_safety: () => ({ dirty: true, ahead: 3, has_upstream: true }) });
+    deleteWorkspaceResult = { ok: true };
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    const msg = confirmMock.mock.calls[0]![0] as string;
+    expect(msg).toContain('Delete workspace "Doomed" (feat/doomed)?');
+    expect(msg).toContain("Uncommitted changes in the worktree will be lost");
+    expect(msg).toContain("3 commits on this branch aren't pushed yet");
+    expect(msg).toContain('they stay only on this machine');
+    expect(deleteWorkspaceCalls).toEqual(["w1"]);
+    expect(useStore.getState().notifLog.length).toBe(0);
+  });
+
+  it("uses singular wording for exactly one unpushed commit", async () => {
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    tauri.invoke({ git_worktree_safety: () => ({ dirty: false, ahead: 1, has_upstream: true }) });
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    const msg = confirmMock.mock.calls[0]![0] as string;
+    expect(msg).toContain("1 commit on this branch isn't pushed yet");
+    expect(msg).toContain("it stays only on this machine");
+    expect(msg).not.toContain("Uncommitted changes");
+  });
+
+  it("swallows a worktreeSafety failure and still proceeds to confirm with the base message", async () => {
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    tauri.invoke({
+      git_worktree_safety: () => {
+        throw new Error("safety check exploded");
+      },
+    });
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    expect(confirmMock).toHaveBeenCalledTimes(1);
+    const msg = confirmMock.mock.calls[0]![0] as string;
+    expect(msg).toContain('Delete workspace "Doomed"');
+    expect(msg).not.toContain("Uncommitted changes");
+    expect(deleteWorkspaceCalls).toEqual(["w1"]);
+  });
+
+  it("notifies 'Delete failed' with the error and repo id when deleteWorkspace fails", async () => {
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    tauri.invoke({ git_worktree_safety: () => ({ dirty: false, ahead: 0, has_upstream: true }) });
+    deleteWorkspaceResult = { ok: false, error: "worktree removal failed: boom" };
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    const notif = useStore.getState().notifLog[0];
+    expect(notif.headline).toBe("Delete failed");
+    expect(notif.sub).toBe("worktree removal failed: boom");
+    expect(notif.repo).toBe("/repo");
+  });
+
+  it("also shows no 'ahead' line when ahead is zero", async () => {
+    const [w1, w2] = backedPair();
+    seed({ repos: [REPO], workspaces: [w1, w2], activeWs: "w1" });
+    tauri.invoke({ git_worktree_safety: () => ({ dirty: false, ahead: 0, has_upstream: true }) });
+    const { container } = render(<WorkspaceRail />);
+    await waitFor(() => expect(container.querySelector(".aurora-ws-trash")).toBeTruthy());
+    fireEvent.click(container.querySelector(".aurora-ws-trash")!);
+    await flush();
+    const msg = confirmMock.mock.calls[0]![0] as string;
+    expect(msg).not.toContain("pushed yet");
+  });
+});
+
+// ── WorkspaceRail: add repository ──────────────────────────────────────────
+
+describe("WorkspaceRail — add repository", () => {
+  it("shows 'Opening…' while busy and ignores a second click until it settles", async () => {
+    let resolveAdd!: (v: unknown) => void;
+    addRepoImpl = () => new Promise((res) => (resolveAdd = res));
+    const { container } = render(<WorkspaceRail />);
+    const btn = within(container).getByText("Add repository");
+    fireEvent.click(btn);
+    await flush();
+    expect(within(container).getByText("Opening…")).toBeTruthy();
+    fireEvent.click(within(container).getByText("Opening…"));
+    await flush();
+    expect(addRepoCalls).toBe(1);
+    resolveAdd({ cancelled: true });
+    await flush();
+    expect(within(container).getByText("Add repository")).toBeTruthy();
+  });
+
+  it("shows no error text when the folder pick is cancelled", async () => {
+    addRepoImpl = () => Promise.resolve({ cancelled: true });
+    const { container } = render(<WorkspaceRail />);
+    fireEvent.click(within(container).getByText("Add repository"));
+    await flush();
+    expect(container.textContent).not.toContain("isn't inside a git repository");
+  });
+
+  it("shows the error message when addRepoFromFolder resolves ok:false", async () => {
+    addRepoImpl = () => Promise.resolve({ ok: false, error: "That folder isn't inside a git repository." });
+    const { container } = render(<WorkspaceRail />);
+    fireEvent.click(within(container).getByText("Add repository"));
+    await flush();
+    expect(container.textContent).toContain("That folder isn't inside a git repository.");
+  });
+
+  it("shows no error message on success", async () => {
+    addRepoImpl = () => Promise.resolve({ ok: true, root: "/new", name: "new-repo" });
+    const { container } = render(<WorkspaceRail />);
+    fireEvent.click(within(container).getByText("Add repository"));
+    await flush();
+    expect(container.textContent).not.toContain("isn't inside a git repository");
+  });
+});
+
+// ── WorkspaceContextBar ─────────────────────────────────────────────────────
+
+describe("WorkspaceContextBar", () => {
+  // BUG (confirmed, reproduced in isolation — see notes): WorkspaceContextBar's
+  // `scripts` selector is
+  //   useStore((s) => (repoId ? (s.userScripts[repoId]?.scripts ?? []) : []))
+  // Both the `repoId` falsy branch and the `?? []` fallback allocate a brand
+  // new array literal on *every* selector invocation. Zustand v5's plain
+  // `useStore` (unlike v4's useSyncExternalStoreWithSelector) does not memoize
+  // selector output, so React's external-store snapshot check sees a "new"
+  // value on every render and enters an infinite render loop, which React
+  // eventually kills with "Maximum update depth exceeded" — a real crash, not
+  // a test artifact (reproduced with a bare zustand store + this exact
+  // selector shape, no Tauri/mock involvement). This fires whenever
+  // WorkspaceContextBar is asked to render with no active workspace, or an
+  // active workspace whose repoId is null (any manual lane) — hooks run
+  // before the `if (!ws) return null` early return, so even the "renders
+  // nothing" case is affected.
+  it("BUG: crashes with 'Maximum update depth exceeded' when there is no active workspace (src/components/WorkspaceRail.tsx:620-622)", () => {
+    seed({ activeWs: null });
+    expect(() => render(<WorkspaceContextBar />)).toThrow(/Maximum update depth exceeded/);
+  });
+
+  it("BUG: crashes the same way for a manual-lane active workspace (repoId null)", () => {
+    const w = makeWorkspace({ id: "w1", repoId: null, issueKey: "X-1" });
+    seed({ workspaces: [w], activeWs: "w1" });
+    expect(() => render(<WorkspaceContextBar />)).toThrow(/Maximum update depth exceeded/);
+  });
+
+  it("renders nothing when the active workspace has no issueKey/preset/offset", () => {
+    // repoId must be truthy with a *registered* (even if empty) userScripts
+    // entry — see the BUG note above for why a null repoId isn't safe to render.
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", issueKey: null, preset: null, env: {} });
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts: [], onEnter: null } } });
+    const { container } = render(<WorkspaceContextBar />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("renders branch, issueKey, jira and preset chips when set", () => {
+    const w = makeWorkspace({
+      id: "w1",
+      repoId: "/repo",
+      branch: "feat/y",
+      issueKey: "PROJ-7",
+      jiraStatus: "Review",
+      preset: "backend",
+      env: { AURORA_PORT_OFFSET: "2" },
+    });
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts: [], onEnter: null } } });
+    const { container } = render(<WorkspaceContextBar />);
+    expect(container.textContent).toContain("feat/y");
+    expect(container.textContent).toContain("PROJ-7");
+    expect(container.textContent).toContain("Review");
+    expect(container.textContent).toContain("preset: backend");
+  });
+
+  it("omits branch/issueKey/preset chips when unset but keeps the bar visible via offset", () => {
+    const w = makeWorkspace({
+      id: "w1",
+      repoId: "/repo",
+      branch: null,
+      issueKey: null,
+      preset: null,
+      env: { AURORA_PORT_OFFSET: "3" },
+    });
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts: [], onEnter: null } } });
+    const { container } = render(<WorkspaceContextBar />);
+    expect(container.firstChild).toBeTruthy();
+    expect(container.textContent).not.toContain("seeded from");
+    expect(container.textContent).not.toContain("preset:");
+  });
+
+  it("shows the derived-ports chip (with a separator dot between entries) when scripts declare ports", () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    const scripts = [
+      { name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) next dev" }] },
+      { name: "api", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((4000 + AURORA_PORT_OFFSET)) node server.js" }] },
+    ];
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    const { container } = render(<WorkspaceContextBar />);
+    expect(container.querySelector(".aurora-ws-ports")).toBeTruthy();
+    expect(container.textContent).toContain("3005");
+    expect(container.textContent).toContain("4005");
+    expect(container.querySelector(".aurora-ws-offset")).toBeNull();
+  });
+
+  it("falls back to the plain offset chip and hides the Run/Stop button when no scripts declare ports", () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts: [], onEnter: null } } });
+    const { container } = render(<WorkspaceContextBar />);
+    expect(container.querySelector(".aurora-ws-offset")).toBeTruthy();
+    expect(container.querySelector(".aurora-ws-ports")).toBeNull();
+    expect(container.querySelector(".aurora-ws-runtoggle")).toBeNull();
+  });
+
+  it("shows a singular 'Run 1 server' button when down, and toggles class/label/icon when up", () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    const scripts = [
+      { name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) next dev" }] },
+    ];
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    serversUpValue = false;
+    const { container } = render(<WorkspaceContextBar />);
+    const btn = container.querySelector(".aurora-ws-runtoggle") as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.getAttribute("aria-label")).toBe("Run servers");
+    expect(btn.getAttribute("title")).toBe("Run 1 server");
+    expect(btn.textContent).toContain("Run");
+    expect(btn.className).not.toContain("aurora-ws-runtoggle--up");
+  });
+
+  it("shows a plural 'Stop N servers' button and the --up class when servers are up", () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    const scripts = [
+      { name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) next dev" }] },
+      { name: "api", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((4000 + AURORA_PORT_OFFSET)) node server.js" }] },
+    ];
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    serversUpValue = true;
+    const { container } = render(<WorkspaceContextBar />);
+    const btn = container.querySelector(".aurora-ws-runtoggle") as HTMLButtonElement;
+    expect(btn.getAttribute("aria-label")).toBe("Stop servers");
+    expect(btn.getAttribute("title")).toBe("Stop 2 servers");
+    expect(btn.textContent).toContain("Stop");
+    expect(btn.className).toContain("aurora-ws-runtoggle--up");
+  });
+
+  it("clicking Run calls runServers(ws.id) and does not notify on success", async () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    serversUpValue = false;
+    const { container } = render(<WorkspaceContextBar />);
+    fireEvent.click(container.querySelector(".aurora-ws-runtoggle")!);
+    await flush();
+    expect(serversCalls).toEqual([{ fn: "run", wsId: "w1" }]);
+    expect(useStore.getState().notifLog.length).toBe(0);
+  });
+
+  it("notifies 'Run servers failed' with the Error message when runServers rejects", async () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    serversUpValue = false;
+    runServersImpl = () => Promise.reject(new Error("spawn failed"));
+    const { container } = render(<WorkspaceContextBar />);
+    fireEvent.click(container.querySelector(".aurora-ws-runtoggle")!);
+    await flush();
+    const notif = useStore.getState().notifLog[0];
+    expect(notif.headline).toBe("Run servers failed");
+    expect(notif.sub).toBe("spawn failed");
+    expect(notif.repo).toBe("/repo");
+  });
+
+  it("notifies 'Stop servers failed' stringifying a non-Error rejection", async () => {
+    const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+    const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
+    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    serversUpValue = true;
+    stopServersImpl = () => Promise.reject("kill -9 refused");
+    const { container } = render(<WorkspaceContextBar />);
+    fireEvent.click(container.querySelector(".aurora-ws-runtoggle")!);
+    await flush();
+    const notif = useStore.getState().notifLog[0];
+    expect(notif.headline).toBe("Stop servers failed");
+    expect(notif.sub).toBe("kill -9 refused");
+  });
+
+  // Note: `ws.repoId ?? ""` in the Run/Stop failure notify (WorkspaceRail.tsx:791)
+  // is dead code in practice — the Run/Stop button only renders when `servers.length
+  // > 0`, which requires port-scripts keyed by a truthy repoId in userScripts, so
+  // `ws.repoId` is always truthy whenever that onClick can fire. Rendering the bar
+  // with a null repoId to reach it directly hits the selector crash documented
+  // above, so this fallback can't be exercised through a real render either way.
+});

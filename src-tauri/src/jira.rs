@@ -406,3 +406,181 @@ fn urlencode(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── jql_escape ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn jql_escape_leaves_plain_text_alone() {
+        assert_eq!(jql_escape("fix login bug"), "fix login bug");
+    }
+
+    #[test]
+    fn jql_escape_escapes_quotes_and_backslashes() {
+        assert_eq!(jql_escape(r#"say "hi""#), r#"say \"hi\""#);
+        assert_eq!(jql_escape(r"C:\path"), r"C:\\path");
+    }
+
+    #[test]
+    fn jql_escape_backslash_before_quote_escapes_both_in_order() {
+        // Backslashes must be escaped first, else a literal `\"` would be
+        // mis-escaped as `\\\"` -> `\"` and change meaning.
+        assert_eq!(jql_escape(r#"a\"b"#), r#"a\\\"b"#);
+    }
+
+    // ── looks_like_key ───────────────────────────────────────────────────────
+
+    #[test]
+    fn looks_like_key_accepts_standard_issue_keys() {
+        assert!(looks_like_key("ABC-123"));
+        assert!(looks_like_key("A1-2"));
+        assert!(looks_like_key("  DEV-9  ")); // trimmed first
+    }
+
+    #[test]
+    fn looks_like_key_rejects_free_text() {
+        assert!(!looks_like_key("fix login bug"));
+        assert!(!looks_like_key("ABC123")); // no dash
+        assert!(!looks_like_key("-123")); // empty project segment
+        assert!(!looks_like_key("ABC-")); // empty number segment
+        assert!(!looks_like_key("ABC-12a")); // non-digit in number
+        assert!(!looks_like_key("1BC-123")); // project must start alphabetic
+        assert!(!looks_like_key(""));
+    }
+
+    // ── origin ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn origin_trims_whitespace_and_trailing_slashes() {
+        assert_eq!(origin("https://foo.atlassian.net"), "https://foo.atlassian.net");
+        assert_eq!(origin("https://foo.atlassian.net/"), "https://foo.atlassian.net");
+        assert_eq!(origin("https://foo.atlassian.net//"), "https://foo.atlassian.net");
+        assert_eq!(origin("  https://foo.atlassian.net  "), "https://foo.atlassian.net");
+    }
+
+    // ── urlencode ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn urlencode_leaves_unreserved_chars_untouched() {
+        assert_eq!(urlencode("Abc123-_.~"), "Abc123-_.~");
+    }
+
+    #[test]
+    fn urlencode_percent_encodes_reserved_and_space() {
+        assert_eq!(urlencode("a b"), "a%20b");
+        // `~` is in the RFC-3986 unreserved set (and is explicitly passed
+        // through by the match arm below), so it is NOT percent-encoded.
+        assert_eq!(urlencode("summary ~ \"bug\""), "summary%20~%20%22bug%22");
+    }
+
+    #[test]
+    fn urlencode_handles_multibyte_utf8_per_byte() {
+        // "é" is 2 bytes in UTF-8 (0xC3 0xA9).
+        assert_eq!(urlencode("é"), "%C3%A9");
+    }
+
+    // ── map_issue ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn map_issue_extracts_all_fields_when_present() {
+        let fields = json!({
+            "summary": "Fix the thing",
+            "issuetype": { "name": "Bug" },
+            "status": { "name": "In Progress" },
+            "assignee": { "displayName": "Ada Lovelace" },
+            "components": [{ "name": "backend" }],
+            "fixVersions": [{ "name": "1.2.0" }],
+        });
+        let issue = map_issue("PROJ-1", &fields);
+        assert_eq!(issue.key, "PROJ-1");
+        assert_eq!(issue.summary, "Fix the thing");
+        assert_eq!(issue.issue_type, "Bug");
+        assert_eq!(issue.status, "In Progress");
+        assert_eq!(issue.assignee.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(issue.component.as_deref(), Some("backend"));
+        assert_eq!(issue.fix_version.as_deref(), Some("1.2.0"));
+    }
+
+    #[test]
+    fn map_issue_defaults_missing_fields_to_empty_or_none() {
+        let fields = json!({});
+        let issue = map_issue("PROJ-2", &fields);
+        assert_eq!(issue.summary, "");
+        assert_eq!(issue.issue_type, "");
+        assert_eq!(issue.status, "");
+        assert_eq!(issue.assignee, None);
+        assert_eq!(issue.component, None);
+        assert_eq!(issue.fix_version, None);
+    }
+
+    #[test]
+    fn map_issue_handles_empty_components_and_unassigned() {
+        let fields = json!({
+            "summary": "No assignee",
+            "assignee": null,
+            "components": [],
+            "fixVersions": [],
+        });
+        let issue = map_issue("PROJ-3", &fields);
+        assert_eq!(issue.assignee, None);
+        assert_eq!(issue.component, None);
+        assert_eq!(issue.fix_version, None);
+    }
+
+    // ── flatten_adf / adf_text ───────────────────────────────────────────────
+
+    #[test]
+    fn adf_text_flattens_simple_paragraph() {
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "Hello world" }]
+            }]
+        });
+        assert_eq!(adf_text(&doc), "Hello world");
+    }
+
+    #[test]
+    fn adf_text_joins_multiple_paragraphs_with_newline() {
+        let doc = json!({
+            "type": "doc",
+            "content": [
+                { "type": "paragraph", "content": [{ "type": "text", "text": "Line one" }] },
+                { "type": "paragraph", "content": [{ "type": "text", "text": "Line two" }] },
+            ]
+        });
+        assert_eq!(adf_text(&doc), "Line one\nLine two");
+    }
+
+    #[test]
+    fn adf_text_handles_hard_break_within_a_paragraph() {
+        let doc = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [
+                    { "type": "text", "text": "Line1" },
+                    { "type": "hardBreak" },
+                    { "type": "text", "text": "Line2" },
+                ]
+            }]
+        });
+        assert_eq!(adf_text(&doc), "Line1\nLine2");
+    }
+
+    #[test]
+    fn adf_text_of_null_is_empty() {
+        assert_eq!(adf_text(&Value::Null), "");
+    }
+
+    #[test]
+    fn adf_text_of_missing_description_field_is_empty() {
+        let fields = json!({});
+        assert_eq!(adf_text(&fields["description"]), "");
+    }
+}

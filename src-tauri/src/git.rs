@@ -389,3 +389,81 @@ fn parse_shortstat(s: &str) -> (u32, u32, u32) {
     }
     (files, added, removed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{numstat_new_path, parse_shortstat};
+
+    // ── parse_shortstat ──────────────────────────────────────────────────────
+
+    #[test]
+    fn shortstat_parses_all_three_fields() {
+        let s = "3 files changed, 12 insertions(+), 4 deletions(-)";
+        assert_eq!(parse_shortstat(s), (3, 12, 4));
+    }
+
+    #[test]
+    fn shortstat_handles_singular_wording() {
+        // git uses singular "file"/"insertion"/"deletion" when the count is 1.
+        let s = "1 file changed, 1 insertion(+), 1 deletion(-)";
+        assert_eq!(parse_shortstat(s), (1, 1, 1));
+    }
+
+    #[test]
+    fn shortstat_handles_insertions_only() {
+        let s = "2 files changed, 5 insertions(+)";
+        assert_eq!(parse_shortstat(s), (2, 5, 0));
+    }
+
+    #[test]
+    fn shortstat_handles_deletions_only() {
+        let s = "1 file changed, 3 deletions(-)";
+        assert_eq!(parse_shortstat(s), (1, 0, 3));
+    }
+
+    #[test]
+    fn shortstat_empty_string_is_all_zero() {
+        assert_eq!(parse_shortstat(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn shortstat_garbage_input_is_all_zero() {
+        assert_eq!(parse_shortstat("not a shortstat line at all"), (0, 0, 0));
+    }
+
+    // ── numstat_new_path ─────────────────────────────────────────────────────
+
+    #[test]
+    fn numstat_path_unchanged_when_no_rename() {
+        assert_eq!(numstat_new_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn numstat_path_plain_rename_arrow() {
+        assert_eq!(numstat_new_path("old.rs => new.rs"), "new.rs");
+    }
+
+    #[test]
+    fn numstat_path_braced_rename_takes_new_side() {
+        assert_eq!(
+            numstat_new_path("src/{old.rs => new.rs}"),
+            "src/new.rs"
+        );
+    }
+
+    #[test]
+    fn numstat_path_braced_rename_with_prefix_and_suffix() {
+        assert_eq!(
+            numstat_new_path("src/a/{b => c}/d.rs"),
+            "src/a/c/d.rs"
+        );
+    }
+
+    #[test]
+    fn numstat_path_malformed_braces_falls_back_to_plain_split() {
+        // No closing brace: the `{}` branch is skipped, falls back to a plain
+        // " => " split, taking the right-hand side verbatim.
+        let field = "src/{old.rs => new.rs";
+        assert_eq!(numstat_new_path(field), "new.rs");
+    }
+}

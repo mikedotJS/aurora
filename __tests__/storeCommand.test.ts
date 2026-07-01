@@ -52,17 +52,24 @@ mock.module("../src/lib/theme", () => ({
 }));
 
 // ── Load the actual store ─────────────────────────────────────────────────────
-const { useStore } = (await import("../src/state/store")) as {
-  useStore: {
-    getState: () => {
-      command: { query: string; sel: number; repoId?: string | null } | null;
-      openCommand: (repoId?: string | null) => void;
-      closeCommand: () => void;
-      setCommandQuery: (q: string) => void;
-      setCommandRepo: (repoId: string | null) => void;
-    };
-    setState: (patch: Record<string, unknown>) => void;
-  };
+// NOTE: co-located with the init/boot-lane tests below because this is the file
+// whose REAL-store import survives the full-suite run (bun's mock.module for
+// "../src/state/store" — registered by teardown/runServers/buildCreateSpec — leaks
+// globally; a separate real-store file gets the mock instead and loses `init`).
+const storeMod = (await import("../src/state/store")) as typeof import("../src/state/store");
+const { useStore, activeWorkspace, activePane, activeGroup } = storeMod;
+const { statusOf, statusLine } = (await import("../src/lib/workspace")) as typeof import("../src/lib/workspace");
+const ports = (await import("../src/lib/ports")) as typeof import("../src/lib/ports");
+
+// localStorage shim so init()'s savePersisted / loadRepos don't throw in Bun.
+const _ls = new Map<string, string>();
+(globalThis as unknown as { localStorage: Storage }).localStorage = {
+  getItem: (k: string) => (_ls.has(k) ? _ls.get(k)! : null),
+  setItem: (k: string, v: string) => void _ls.set(k, String(v)),
+  removeItem: (k: string) => void _ls.delete(k),
+  clear: () => _ls.clear(),
+  key: () => null,
+  length: 0,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -165,5 +172,183 @@ describe("openCommand + command actions — combined round-trip", () => {
     const cmd = useStore.getState().command!;
     expect(cmd.repoId).toBe("repo-B");
     expect(cmd.query).toBe("typed");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// init() boot-lane logic — empty-startup-state
+//
+// init() creates+unshifts a boot lane ONLY when boot.repo is a real repo
+// checkout — a repo launch is a real context. It NEVER synthesizes a manual
+// "home" lane anymore: 0 repo context + 0 restored workspaces settles on
+// `workspaces = []`, `activeWs = null`, `initialized = true` (the empty state).
+// This supersedes the prior "keep a lane when workspaces.length === 0"
+// fallback. With restored repo workspaces and no boot repo, NO manual "home"
+// lane is created either, and an undefined bootWs must never crash activeWs
+// computation.
+//
+// A repoId:null ("manual") lane can still exist — but only via the surviving
+// creation path, createWorkspace({ repoId: null, ... }) — and the render path
+// (derived selectors + pure status/port helpers) must stay null-safe for it.
+// ══════════════════════════════════════════════════════════════════════════════
+
+const HOME = "/Users/michaelromain";
+const SETTINGS = storeMod.DEFAULT_SETTINGS;
+type BootInfo = import("../src/state/store").BootInfo;
+type PersistedWs = import("../src/lib/workspace").PersistedWs;
+
+function repoWs(overrides: Partial<PersistedWs> = {}): PersistedWs {
+  return {
+    id: "w-gody", repoId: "/Users/michaelromain/Dev/gody", title: "GODY-123", issueKey: "GODY-123",
+    branch: "feat/x", baseBranch: "develop", dir: "/Users/michaelromain/Dev/gody", preset: null,
+    jiraStatus: "In Progress", jiraUrl: null, jiraSync: false, env: {}, createdAt: 1, lastActive: 2,
+    ...overrides,
+  };
+}
+
+describe("init boot-lane — empty-startup-state", () => {
+  it("guard: this file's real store is loaded (init is a function)", () => {
+    expect(typeof useStore.getState().init).toBe("function");
+  });
+
+  it("repo lane: boot.repo set, nothing restored → one repo lane, active, no home lane", () => {
+    const boot: BootInfo = { repo: { root: "/repo", name: "repo", defaultBranch: "main", currentBranch: "main" }, restored: [], activeWs: null };
+    useStore.getState().init(HOME, SETTINGS, false, boot);
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces[0].repoId).toBe("/repo");
+    expect(s.activeWs).toBe(s.workspaces[0].id);
+    expect(s.workspaces.some((w) => w.repoId === null)).toBe(false);
+    expect(s.initialized).toBe(true);
+  });
+
+  it("empty startup: no repo, nothing restored → zero workspaces, activeWs null, initialized true", () => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(0);
+    expect(s.activeWs).toBeNull();
+    expect(s.initialized).toBe(true);
+    expect(activeWorkspace(s)).toBeUndefined();
+  });
+
+  it("empty startup persists across a relaunch (re-running init with the same empty boot stays empty)", () => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(0);
+    expect(s.activeWs).toBeNull();
+  });
+
+  it("restored repo lane + no boot repo → NO 'michaelromain' home lane; restored active", () => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [repoWs()], activeWs: "w-gody" });
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces[0].id).toBe("w-gody");
+    expect(s.activeWs).toBe("w-gody");
+    expect(s.workspaces.some((w) => w.repoId === null)).toBe(false);
+    expect(s.workspaces.some((w) => w.title === "michaelromain")).toBe(false);
+  });
+
+  it("restored lane + invalid activeWs → falls back to workspaces[0]; no crash on undefined bootWs; no home lane", () => {
+    expect(() =>
+      useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [repoWs()], activeWs: "does-not-exist" }),
+    ).not.toThrow();
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.activeWs).toBe("w-gody");
+    expect(s.workspaces.some((w) => w.title === "michaelromain")).toBe(false);
+  });
+
+  it("boot repo already among restored (same dir) → reused, not duplicated", () => {
+    useStore.getState().init(HOME, SETTINGS, false, {
+      repo: { root: "/Users/michaelromain/Dev/gody", name: "gody", defaultBranch: "develop", currentBranch: "feat/x" },
+      restored: [repoWs()], activeWs: "w-gody",
+    });
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.activeWs).toBe("w-gody");
+  });
+
+  it("exactly one workspace is mounted (the active one)", () => {
+    useStore.getState().init(HOME, SETTINGS, false, {
+      repo: null,
+      restored: [repoWs(), repoWs({ id: "w-2", dir: "/Users/michaelromain/Dev/two", repoId: "/Users/michaelromain/Dev/two", title: "two" })],
+      activeWs: "w-2",
+    });
+    const s = useStore.getState();
+    expect(s.workspaces.filter((w) => w.mounted)).toHaveLength(1);
+    expect(s.workspaces.find((w) => w.mounted)!.id).toBe("w-2");
+  });
+});
+
+describe("manual lane (repoId:null) is null-safe — regression", () => {
+  // init() never synthesizes a manual/home lane anymore (empty-startup-state).
+  // The only surviving way to get a repoId:null workspace is an explicit
+  // createWorkspace({ repoId: null, ... }) call — start from the empty state,
+  // then create one, to keep this regression coverage alive.
+  beforeEach(() => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    useStore.getState().createWorkspace({ repoId: null, title: "manual", dir: HOME, branch: null });
+  });
+
+  it("active workspace is the manual lane with null repo/branch and empty base", () => {
+    const ws = activeWorkspace(useStore.getState())!;
+    expect(ws.repoId).toBeNull();
+    expect(ws.branch).toBeNull();
+    expect(ws.baseBranch).toBe("");
+    expect(ws.env).toEqual({});
+  });
+
+  it("active selectors resolve (no undefined tab/pane) for the manual lane", () => {
+    const s = useStore.getState();
+    expect(activeGroup(s)).toBeDefined();
+    expect(activePane(s)).toBeDefined();
+    expect(activePane(s)!.repoRoot).toBeNull();
+  });
+
+  it("status helpers do not throw and report a manual lane", () => {
+    const ws = activeWorkspace(useStore.getState())!;
+    expect(() => statusOf(ws)).not.toThrow();
+    expect(statusOf(ws)).toBe("idle");
+    expect(statusLine(ws).text).toBe("manual branch");
+  });
+
+  it("port helpers are null-safe for an empty env + no scripts", () => {
+    const ws = activeWorkspace(useStore.getState())!;
+    expect(Number.isNaN(ports.readOffset(ws.env))).toBe(true);
+    expect(ports.parseDerivedPorts([], NaN)).toEqual([]);
+    expect(ports.portScripts([])).toEqual([]);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Empty state — exit path + the non-goal guard
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe("empty state — createWorkspace is the exit path", () => {
+  it("createWorkspace from an empty store sets activeWs to the new workspace's id", () => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    expect(useStore.getState().workspaces).toHaveLength(0);
+    expect(useStore.getState().activeWs).toBeNull();
+
+    const id = useStore.getState().createWorkspace({ repoId: null, title: "first", dir: HOME, branch: null });
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.activeWs).toBe(id);
+    expect(activeWorkspace(s)!.id).toBe(id);
+  });
+});
+
+describe("removeWorkspace never drops to the empty state (non-goal guard)", () => {
+  it("refuses to remove the last remaining workspace", () => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    const id = useStore.getState().createWorkspace({ repoId: null, title: "only", dir: HOME, branch: null });
+    expect(useStore.getState().workspaces).toHaveLength(1);
+
+    useStore.getState().removeWorkspace(id);
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces[0].id).toBe(id);
+    expect(s.activeWs).toBe(id);
   });
 });

@@ -41,15 +41,15 @@ export function StatusBar() {
         color: "var(--faint)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <span style={{ color: "var(--dim)" }}>{cwd}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flex: "0 1 auto", minWidth: 0 }}>
+        <span style={{ color: "var(--dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{cwd}</span>
         {branch && pane && (
           <>
             <BranchChip paneId={pane.id} cwd={pane.cwd} branch={branch} />
             <span
               onClick={() => openPanel("mr")}
               title="show open merge requests"
-              style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+              style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
             >
               <span style={{ color: "var(--acd)" }}>⇋</span>
               {mrs ? `${mrs.length} MRs` : "MRs"}
@@ -60,7 +60,7 @@ export function StatusBar() {
           <span
             onClick={() => setPaneView(pane.id, "changes")}
             title="review changes (⌘G)"
-            style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+            style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
           >
             <span style={{ color: "var(--acd)" }}>⊟</span>
             {diff.files} changed
@@ -72,7 +72,7 @@ export function StatusBar() {
           <span
             onClick={() => openPanel("scripts")}
             title="run a script"
-            style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+            style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
           >
             <span style={{ color: "var(--acd)" }}>⚡</span>
             scripts
@@ -84,7 +84,7 @@ export function StatusBar() {
             markNotifsSeen();
           }}
           title="notification history"
-          style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
         >
           {muted ? (
             <>
@@ -116,10 +116,10 @@ export function StatusBar() {
             </span>
           )}
         </span>
-        {tabsLen > 1 && <span style={{ color: "var(--faint)" }}>tab {active + 1}/{tabsLen}</span>}
+        {tabsLen > 1 && <span style={{ color: "var(--faint)", flexShrink: 0, whiteSpace: "nowrap" }}>tab {active + 1}/{tabsLen}</span>}
       </div>
 
-      <div style={{ display: "flex", gap: 16 }}>
+      <div className="aurora-statusbar-hints" style={{ gap: 16, flex: "0 0 auto" }}>
         <span>
           <span style={{ color: "var(--acd)" }}>⌘T</span> new tab
         </span>

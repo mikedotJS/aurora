@@ -28,7 +28,7 @@ export function TitleBar() {
         borderBottom: "1px solid var(--line)",
       }}
     >
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
         <span
           onClick={() => appWindow.close()}
           title="close"
@@ -63,6 +63,7 @@ export function TitleBar() {
           alignItems: "center",
           justifyContent: "center",
           gap: 8,
+          minWidth: 0,
         }}
       >
         {railCollapsed ? (
@@ -71,7 +72,18 @@ export function TitleBar() {
           <>
             <span>aurora</span>
             <span style={{ color: "var(--faint)" }}>—</span>
-            <span style={{ color: branch ? "var(--acd)" : undefined }}>{branch ? `⎇ ${branch}` : "zsh"}</span>
+            <span
+              title={branch ?? undefined}
+              style={{
+                color: branch ? "var(--acd)" : undefined,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                minWidth: 0,
+              }}
+            >
+              {branch ? `⎇ ${branch}` : "zsh"}
+            </span>
           </>
         )}
       </div>
@@ -85,6 +97,7 @@ export function TitleBar() {
           fontFamily: "var(--sans)",
           fontSize: 11,
           color: "var(--faint)",
+          minWidth: 0,
         }}
       >
         <span

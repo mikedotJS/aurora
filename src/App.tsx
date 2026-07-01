@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { TitleBar } from "./components/TitleBar";
 import { TabStrip } from "./components/TabStrip";
 import { PaneArea } from "./components/PaneGrid";
@@ -12,6 +12,7 @@ import { NotifSheet } from "./components/NotifSheet";
 import { WorkspaceRail, WorkspaceContextBar } from "./components/WorkspaceRail";
 import { WorkspaceCommand } from "./components/WorkspaceCommand";
 import { WorkspaceSettings } from "./components/WorkspaceSettings";
+import { EmptyState } from "./components/EmptyState";
 import {
   useStore,
   activePane,
@@ -33,9 +34,11 @@ import { maybeFireHook } from "./lib/scripts";
 import { startNotificationPoller } from "./lib/notifications";
 import { checkForUpdates } from "./lib/updater";
 import { keyPresent } from "./lib/keychain";
+import { BP_NARROW_PX } from "./lib/useMediaQuery";
 
 export default function App() {
-  const ready = useStore((s) => s.workspaces.length > 0);
+  const ready = useStore((s) => s.initialized);
+  const hasActiveWs = useStore((s) => activeWorkspace(s) !== undefined);
   const settingsOpen = useStore((s) => s.settingsOpen);
   const workspaceSettingsOpen = useStore((s) => s.workspaceSettingsRepo !== null);
   const scriptsSetupOpen = useStore((s) => s.scriptsSetupOpen);
@@ -189,6 +192,47 @@ export default function App() {
     return () => clearTimeout(t);
   }, [activeTabId, tabRunKey]);
 
+  // Rail auto-collapse (D3): when the window crosses from wide into narrow, collapse
+  // the rail once. A user who manually re-opens while narrow is never force-collapsed
+  // again until the window returns to wide and crosses back into narrow.
+  //
+  // Two effects cooperate:
+  //   (a) The matchMedia effect fires on threshold crossings — the only place we
+  //       collapse or reset the override flag.
+  //   (b) The railCollapsed watch detects a true→false transition while narrow and
+  //       sets the session override, suppressing the next auto-collapse.
+  //
+  // railCollapsed is NOT persisted; this is session-only behaviour by design.
+  const userOpenedWhileNarrow = useRef(false);
+  const prevRailCollapsed = useRef(railCollapsed);
+
+  // (b) Detect manual re-open (true → false) while the window is narrow.
+  useEffect(() => {
+    const was = prevRailCollapsed.current;
+    prevRailCollapsed.current = railCollapsed;
+    if (was && !railCollapsed && window.matchMedia(`(max-width: ${BP_NARROW_PX}px)`).matches) {
+      userOpenedWhileNarrow.current = true;
+    }
+  }, [railCollapsed]);
+
+  // (a) Auto-collapse on narrow entry; reset override on wide return.
+  useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${BP_NARROW_PX}px)`);
+    const handleChange = (e: MediaQueryListEvent) => {
+      if (e.matches) {
+        // Crossed into narrow — collapse once unless the user overrode it.
+        if (!userOpenedWhileNarrow.current) {
+          useStore.getState().setRailCollapsed(true);
+        }
+      } else {
+        // Returned to wide — reset the override; do NOT auto-open.
+        userOpenedWhileNarrow.current = false;
+      }
+    };
+    mql.addEventListener("change", handleChange);
+    return () => mql.removeEventListener("change", handleChange);
+  }, []);
+
   if (!ready) return null;
 
   return (
@@ -213,9 +257,15 @@ export default function App() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {!railCollapsed && <WorkspaceRail />}
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <WorkspaceContextBar />
-          <TabStrip />
-          <PaneArea />
+          {hasActiveWs ? (
+            <>
+              <WorkspaceContextBar />
+              <TabStrip />
+              <PaneArea />
+            </>
+          ) : (
+            <EmptyState />
+          )}
         </div>
       </div>
       <StatusBar />

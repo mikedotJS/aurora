@@ -77,6 +77,7 @@ pub fn ai_key_delete(id: String) -> Result<(), String> {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(test, derive(Debug))]
 pub struct Suggestion {
     pub command: String,
     pub note: String,
@@ -139,6 +140,14 @@ markdown, no code fences, no surrounding prose."
     );
 
     let content = call_claude(system, prompt, model, 400).await?;
+    parse_suggestion(&content)
+}
+
+/// Parse the model's raw text response (expected to be minified JSON, possibly
+/// wrapped in a ```json code fence despite being asked not to) into a
+/// `Suggestion`. Extracted from `claude_suggest` so the parsing/fence-stripping
+/// logic can be unit-tested without a real network call.
+fn parse_suggestion(content: &str) -> Result<Suggestion, String> {
     let cleaned = content
         .trim_start_matches("```json")
         .trim_start_matches("```")
@@ -165,4 +174,51 @@ pub async fn claude_text(
     max_tokens: Option<u32>,
 ) -> Result<String, String> {
     call_claude(system, prompt, model, max_tokens.unwrap_or(300)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_suggestion;
+
+    #[test]
+    fn parse_suggestion_plain_minified_json() {
+        let s = parse_suggestion(r#"{"command":"ls -la","note":"lists files"}"#).unwrap();
+        assert_eq!(s.command, "ls -la");
+        assert_eq!(s.note, "lists files");
+    }
+
+    #[test]
+    fn parse_suggestion_strips_json_code_fence() {
+        let content = "```json\n{\"command\":\"pwd\",\"note\":\"prints cwd\"}\n```";
+        let s = parse_suggestion(content).unwrap();
+        assert_eq!(s.command, "pwd");
+        assert_eq!(s.note, "prints cwd");
+    }
+
+    #[test]
+    fn parse_suggestion_strips_plain_code_fence() {
+        let content = "```\n{\"command\":\"whoami\",\"note\":\"prints user\"}\n```";
+        let s = parse_suggestion(content).unwrap();
+        assert_eq!(s.command, "whoami");
+        assert_eq!(s.note, "prints user");
+    }
+
+    #[test]
+    fn parse_suggestion_missing_fields_default_to_empty_strings() {
+        let s = parse_suggestion(r#"{}"#).unwrap();
+        assert_eq!(s.command, "");
+        assert_eq!(s.note, "");
+    }
+
+    #[test]
+    fn parse_suggestion_malformed_json_is_an_error_including_raw_content() {
+        let err = parse_suggestion("not json at all").unwrap_err();
+        assert!(err.contains("unexpected model output"));
+        assert!(err.contains("not json at all"));
+    }
+
+    #[test]
+    fn parse_suggestion_empty_string_is_an_error() {
+        assert!(parse_suggestion("").is_err());
+    }
 }

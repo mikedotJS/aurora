@@ -1,0 +1,10 @@
+# Bun test configuration. The preload registers happy-dom + Tauri/xterm mocks so
+# individual suites don't repeat the boilerplate and component tests get a DOM.
+# coverageThreshold is intentionally left unset until the campaign hits target,
+# so intermediate runs don't hard-fail.
+[test]
+preload = ["./test/setup.ts"]
+coverage = true
+coverageSkipTestFiles = true
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"

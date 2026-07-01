@@ -1,7 +1,7 @@
 // Tab strip with drag-to-merge (drop one tab on another to combine their panes
 // into a split group), split badges, and new-tab / split buttons.
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useStore, activeWorkspace, type Group } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 
@@ -27,6 +27,13 @@ export function TabStrip() {
   const dragIdx = useRef<number | null>(null);
   const [dropTarget, setDropTarget] = useState<number | null>(null);
 
+  // Refs for each tab element — used to scroll the active tab into view when
+  // selection changes (keyboard, ⌘-number, or click on an off-screen tab).
+  const tabRefs = useRef<(HTMLDivElement | null)[]>([]);
+  useEffect(() => {
+    tabRefs.current[active]?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [active]);
+
   return (
     <div
       style={{
@@ -35,17 +42,33 @@ export function TabStrip() {
         alignItems: "stretch",
         background: "var(--page)",
         borderBottom: "1px solid var(--line)",
-        padding: "6px 8px 0",
         gap: 3,
         fontFamily: "var(--sans)",
       }}
     >
+      {/* Horizontally scrollable tab list — tabs are flex:0 0 auto so they keep
+          their size and the region scrolls rather than squashing. */}
+      <div
+        className="ascroll-x"
+        style={{
+          flex: "1 1 auto",
+          minWidth: 0,
+          overflowX: "auto",
+          overflowY: "hidden",
+          display: "flex",
+          alignItems: "stretch",
+          gap: 3,
+          paddingTop: 6,
+          paddingLeft: 8,
+        }}
+      >
       {tabs.map((tab, i) => {
         const isActive = i === active;
         const isDrop = dropTarget === i;
         return (
           <div
             key={tab.id}
+            ref={(el) => { tabRefs.current[i] = el; }}
             onClick={() => selectTab(i)}
             draggable
             onDragStart={(e) => {
@@ -82,6 +105,7 @@ export function TabStrip() {
               cursor: isActive ? "default" : "pointer",
               color: isActive ? "var(--fg)" : "var(--dim)",
               position: "relative",
+              flex: "0 0 auto",
             }}
           >
             {isActive && (
@@ -183,42 +207,55 @@ export function TabStrip() {
           </div>
         );
       })}
-
-      <div
-        onClick={newTab}
-        title="new tab (⌘T)"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 30,
-          height: 33,
-          color: "var(--dim)",
-          fontSize: 18,
-          lineHeight: 1,
-          cursor: "pointer",
-          borderRadius: "8px 8px 0 0",
-        }}
-      >
-        +
       </div>
+
+      {/* Pinned action buttons — always reachable, outside the scroll region. */}
       <div
-        onClick={() => splitPane("h")}
-        title="split pane (⌘D)"
         style={{
+          flex: "0 0 auto",
           display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 30,
-          height: 33,
-          color: "var(--dim)",
-          fontSize: 13,
-          lineHeight: 1,
-          cursor: "pointer",
-          borderRadius: "8px 8px 0 0",
+          alignItems: "stretch",
+          gap: 3,
+          paddingTop: 6,
+          paddingRight: 8,
         }}
       >
-        ⊟
+        <div
+          onClick={newTab}
+          title="new tab (⌘T)"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 30,
+            height: 33,
+            color: "var(--dim)",
+            fontSize: 18,
+            lineHeight: 1,
+            cursor: "pointer",
+            borderRadius: "8px 8px 0 0",
+          }}
+        >
+          +
+        </div>
+        <div
+          onClick={() => splitPane("h")}
+          title="split pane (⌘D)"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 30,
+            height: 33,
+            color: "var(--dim)",
+            fontSize: 13,
+            lineHeight: 1,
+            cursor: "pointer",
+            borderRadius: "8px 8px 0 0",
+          }}
+        >
+          ⊟
+        </div>
       </div>
     </div>
   );

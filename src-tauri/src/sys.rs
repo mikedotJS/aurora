@@ -124,8 +124,13 @@ pub fn read_text_file(path: String, max_bytes: Option<usize>) -> Result<String, 
     let bytes = std::fs::read(&target).map_err(|e| e.to_string())?;
     let cap = max_bytes.unwrap_or(8192).min(bytes.len());
     // Back off to the previous char boundary so the lossy decode stays clean.
+    // `end` is a boundary once the byte right after it doesn't continue a
+    // multi-byte sequence — checking `bytes[end]` (not `bytes[end - 1]`, which
+    // can't distinguish a mid-sequence cut from a legitimately complete
+    // character's last byte) is what makes this correct, and the `end <
+    // bytes.len()` guard makes it a no-op on an untruncated read.
     let mut end = cap;
-    while end > 0 && (bytes[end - 1] & 0xC0) == 0x80 {
+    while end > 0 && end < bytes.len() && (bytes[end] & 0xC0) == 0x80 {
         end -= 1;
     }
     Ok(String::from_utf8_lossy(&bytes[..end]).to_string())
@@ -241,4 +246,201 @@ pub fn path_resolve(path: String) -> String {
     std::fs::canonicalize(&expanded)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or(expanded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh, empty temp directory for one test, removed on drop. Name is
+    /// unique per-call (pid + nanosecond timestamp + a counter) so tests
+    /// running in parallel (cargo test's default) never collide.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let dir = std::env::temp_dir().join(format!(
+                "aurora-sys-test-{tag}-{}-{n}-{nanos}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create temp dir");
+            TempDir(dir)
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    // ── expand_tilde ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn expand_tilde_bare_tilde_is_home() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+        assert_eq!(expand_tilde("~"), home);
+    }
+
+    #[test]
+    fn expand_tilde_prefixed_path_joins_home() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        assert_eq!(expand_tilde("~/Projects/aurora"), format!("{home}/Projects/aurora"));
+    }
+
+    #[test]
+    fn expand_tilde_leaves_absolute_path_untouched() {
+        assert_eq!(expand_tilde("/usr/local/bin"), "/usr/local/bin");
+    }
+
+    #[test]
+    fn expand_tilde_leaves_relative_path_untouched() {
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
+    }
+
+    #[test]
+    fn expand_tilde_bare_tilde_without_slash_is_untouched() {
+        // "~foo" is a different user's home in shell semantics; this helper
+        // only handles the exact "~" and "~/" forms, so it passes through.
+        assert_eq!(expand_tilde("~foo"), "~foo");
+    }
+
+    // ── list_dir ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn list_dir_filters_hidden_and_sorts_dirs_before_files_then_by_name() {
+        let tmp = TempDir::new("list");
+        for name in ["zeta.txt", "alpha.txt", "Beta", "alpha_dir", ".hidden"] {
+            let p = tmp.path().join(name);
+            if name == "Beta" || name == "alpha_dir" {
+                std::fs::create_dir(&p).unwrap();
+            } else {
+                std::fs::write(&p, b"x").unwrap();
+            }
+        }
+
+        let entries = list_dir(tmp.path().to_string_lossy().to_string(), None).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        // Dirs first (byte-wise ascending: 'B' < 'a'), then files ascending; the
+        // dotfile is excluded by default.
+        assert_eq!(names, vec!["Beta", "alpha_dir", "alpha.txt", "zeta.txt"]);
+        assert!(entries.iter().find(|e| e.name == "Beta").unwrap().is_dir);
+        assert!(!entries.iter().find(|e| e.name == "alpha.txt").unwrap().is_dir);
+    }
+
+    #[test]
+    fn list_dir_includes_hidden_when_requested() {
+        let tmp = TempDir::new("hidden");
+        std::fs::write(tmp.path().join(".hidden"), b"x").unwrap();
+        std::fs::write(tmp.path().join("visible.txt"), b"x").unwrap();
+
+        let default = list_dir(tmp.path().to_string_lossy().to_string(), None).unwrap();
+        assert!(!default.iter().any(|e| e.name == ".hidden"));
+
+        let with_hidden =
+            list_dir(tmp.path().to_string_lossy().to_string(), Some(true)).unwrap();
+        assert!(with_hidden.iter().any(|e| e.name == ".hidden"));
+    }
+
+    #[test]
+    fn list_dir_missing_directory_is_an_error() {
+        let tmp = TempDir::new("missing-parent");
+        let missing = tmp.path().join("does-not-exist");
+        assert!(list_dir(missing.to_string_lossy().to_string(), None).is_err());
+    }
+
+    // ── read_text_file ───────────────────────────────────────────────────────
+
+    #[test]
+    fn read_text_file_reads_whole_small_file_by_default() {
+        let tmp = TempDir::new("read-whole");
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "hello world").unwrap();
+        let out = read_text_file(file.to_string_lossy().to_string(), None).unwrap();
+        assert_eq!(out, "hello world");
+    }
+
+    #[test]
+    fn read_text_file_truncates_to_max_bytes() {
+        let tmp = TempDir::new("read-trunc");
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "0123456789").unwrap();
+        let out = read_text_file(file.to_string_lossy().to_string(), Some(4)).unwrap();
+        assert_eq!(out, "0123");
+    }
+
+    #[test]
+    fn read_text_file_truncation_backs_off_to_char_boundary() {
+        let tmp = TempDir::new("read-utf8");
+        let file = tmp.path().join("f.txt");
+        // "é" is 2 bytes (0xC3 0xA9); cutting at byte 2 would land mid-character.
+        std::fs::write(&file, "aé").unwrap(); // bytes: 'a', 0xC3, 0xA9 (3 bytes total)
+        let out = read_text_file(file.to_string_lossy().to_string(), Some(2)).unwrap();
+        // Backs off from byte 2 (mid "é") to byte 1 (just "a"), never panics
+        // and never yields a corrupt/lossy replacement character.
+        assert_eq!(out, "a");
+    }
+
+    #[test]
+    fn read_text_file_full_read_never_corrupts_a_trailing_multibyte_char() {
+        // Regression test: a full (non-truncating) read must return the file
+        // byte-for-byte-equivalent text, even when it ends in a multi-byte
+        // UTF-8 character that happens to sit right at the `max_bytes`/file-end
+        // boundary. (Bug found by this test: the boundary back-off used to
+        // check the *last included* byte instead of the *first excluded*
+        // byte, so it couldn't tell "cut mid-character" from "this IS a
+        // complete character's last byte" — corrupting e.g. any file ending
+        // in an accented character like "café" into "caf<U+FFFD>".)
+        let tmp = TempDir::new("read-utf8-full");
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "café").unwrap();
+        let out = read_text_file(file.to_string_lossy().to_string(), None).unwrap();
+        assert_eq!(out, "café");
+    }
+
+    #[test]
+    fn read_text_file_truncation_excludes_multibyte_char_split_by_lead_byte_only() {
+        // "€" is 3 bytes (E2 82 AC). Cutting right after its lead byte (before
+        // any continuation byte is included) must still exclude the whole
+        // character, not just back off one byte and stop on the lead byte.
+        let tmp = TempDir::new("read-utf8-lead");
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "a€").unwrap(); // bytes: 'a', 0xE2, 0x82, 0xAC
+        let out = read_text_file(file.to_string_lossy().to_string(), Some(2)).unwrap();
+        assert_eq!(out, "a");
+    }
+
+    #[test]
+    fn read_text_file_missing_file_is_an_error() {
+        let tmp = TempDir::new("read-missing");
+        let missing = tmp.path().join("nope.txt");
+        assert!(read_text_file(missing.to_string_lossy().to_string(), None).is_err());
+    }
+
+    // ── path_resolve ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn path_resolve_canonicalizes_existing_path() {
+        let tmp = TempDir::new("resolve");
+        let file = tmp.path().join("f.txt");
+        std::fs::write(&file, "x").unwrap();
+        let expected = std::fs::canonicalize(&file).unwrap().to_string_lossy().to_string();
+        assert_eq!(path_resolve(file.to_string_lossy().to_string()), expected);
+    }
+
+    #[test]
+    fn path_resolve_nonexistent_path_falls_back_to_expanded_input() {
+        let p = "/definitely/does/not/exist/aurora-test-path";
+        assert_eq!(path_resolve(p.to_string()), p);
+    }
 }

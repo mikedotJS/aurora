@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Test coverage output (bun --coverage / test/cov.ts)
+coverage
+
 # Claude Code local (machine-specific) settings
 .claude/settings.local.json
 

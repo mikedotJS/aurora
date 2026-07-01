@@ -193,13 +193,13 @@ function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
           ⎇ {ws.branch}
         </div>
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--sans)", fontSize: 10 }}>
-        <span style={{ color: line.color }}>{line.text}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "var(--sans)", fontSize: 10, minWidth: 0 }}>
+        <span style={{ color: line.color, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{line.text}</span>
         {ws.diff && (ws.diff.added > 0 || ws.diff.removed > 0) && (
           <span
             onClick={openChanges}
             title="review changes"
-            style={{ marginLeft: "auto", display: "inline-flex", gap: 6, cursor: "pointer" }}
+            style={{ marginLeft: "auto", display: "inline-flex", gap: 6, cursor: "pointer", flexShrink: 0 }}
           >
             <span style={{ color: "var(--acd)" }}>+{ws.diff.added}</span>
             <span style={{ color: "var(--err)" }}>−{ws.diff.removed}</span>
@@ -212,6 +212,8 @@ function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
               display: "inline-flex",
               alignItems: "center",
               gap: 3,
+              flexShrink: 0,
+              whiteSpace: "nowrap",
               color: "var(--jira)",
               border: "1px solid color-mix(in oklab, var(--jira) 32%, var(--line))",
               borderRadius: 4,
@@ -229,6 +231,7 @@ function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
               marginLeft: !ws.diff && !ws.jiraStatus ? "auto" : 0,
               display: "inline-flex",
               alignItems: "center",
+              flexShrink: 0,
               fontFamily: "var(--mono)",
               fontSize: 9.5,
               lineHeight: 1,
@@ -421,7 +424,7 @@ export function WorkspaceRail() {
   return (
     <div
       style={{
-        flex: "0 0 256px",
+        flex: "0 0 clamp(208px, 22vw, 280px)",
         display: "flex",
         flexDirection: "column",
         background: "var(--page)",
@@ -651,13 +654,28 @@ export function WorkspaceContextBar() {
         fontFamily: "var(--sans)",
         fontSize: 11,
         color: "var(--dim)",
+        minWidth: 0,
       }}
     >
-      {ws.branch && <span style={{ color: "var(--acd)" }}>⎇ {ws.branch}</span>}
+      {ws.branch && (
+        <span
+          title={ws.branch}
+          style={{
+            color: "var(--acd)",
+            flex: "0 1 auto",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          ⎇ {ws.branch}
+        </span>
+      )}
       {ws.issueKey && (
         <>
-          <span style={{ color: "var(--faint)" }}>·</span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <span style={{ color: "var(--faint)", flex: "0 0 auto" }}>·</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, flex: "0 0 auto", whiteSpace: "nowrap" }}>
             seeded from <span style={{ color: "var(--jira)" }}>{ws.issueKey}</span>
           </span>
         </>
@@ -668,6 +686,8 @@ export function WorkspaceContextBar() {
             display: "inline-flex",
             alignItems: "center",
             gap: 4,
+            flex: "0 0 auto",
+            whiteSpace: "nowrap",
             color: "var(--jira)",
             border: "1px solid color-mix(in oklab, var(--jira) 32%, var(--line))",
             borderRadius: 4,
@@ -679,80 +699,88 @@ export function WorkspaceContextBar() {
       )}
       {ws.preset && (
         <>
-          <span style={{ color: "var(--faint)" }}>·</span>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-            <span style={{ color: "var(--ac)" }}>⚡</span>preset: {ws.preset}
+          <span style={{ color: "var(--faint)", flex: "0 0 auto" }}>·</span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, flex: "0 1 auto", minWidth: 0 }}>
+            <span style={{ color: "var(--ac)", flex: "0 0 auto" }}>⚡</span>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+              preset: {ws.preset}
+            </span>
           </span>
         </>
       )}
       {hasOffset && (
         <>
-          <span style={{ color: "var(--faint)" }}>·</span>
-          {derivedPorts.length > 0 ? (
-            <span
-              className="aurora-ws-ports"
-              title="Ports these scripts will bind in this workspace"
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "2px 9px",
-                borderRadius: 6,
-                whiteSpace: "nowrap",
-                color: "var(--acd)",
-                background: "color-mix(in oklab, var(--ac) 9%, transparent)",
-                border: "1px solid color-mix(in oklab, var(--acd) 30%, var(--line))",
-              }}
-            >
-              <PortIcon size={11} />
-              {derivedPorts.map(({ label, port }, i) => (
-                <Fragment key={port}>
-                  {i > 0 && <span style={{ color: "var(--faint)" }}>·</span>}
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <span style={{ fontFamily: "var(--sans)", fontSize: 10, color: "var(--dim)", letterSpacing: "0.01em" }}>
-                      {label}
+          {/* Dot separator: pinned, never scrolls */}
+          <span style={{ color: "var(--faint)", flex: "0 0 auto" }}>·</span>
+          {/* Port chips: scroll horizontally when they overflow the bar.
+              The pill keeps its internal nowrap; only this wrapper scrolls. */}
+          <div
+            className="ascroll-x"
+            style={{ flex: "1 1 auto", minWidth: 0, overflowX: "auto", overflowY: "hidden" }}
+          >
+            {derivedPorts.length > 0 ? (
+              <span
+                className="aurora-ws-ports"
+                title="Ports these scripts will bind in this workspace"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "2px 9px",
+                  borderRadius: 6,
+                  whiteSpace: "nowrap",
+                  color: "var(--acd)",
+                  background: "color-mix(in oklab, var(--ac) 9%, transparent)",
+                  border: "1px solid color-mix(in oklab, var(--acd) 30%, var(--line))",
+                }}
+              >
+                <PortIcon size={11} />
+                {derivedPorts.map(({ label, port }, i) => (
+                  <Fragment key={port}>
+                    {i > 0 && <span style={{ color: "var(--faint)" }}>·</span>}
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ fontFamily: "var(--sans)", fontSize: 10, color: "var(--dim)", letterSpacing: "0.01em" }}>
+                        {label}
+                      </span>
+                      <span style={{ fontFamily: "var(--mono)", fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--ac)" }}>
+                        <span style={{ color: "var(--acd)" }}>:</span>
+                        {port}
+                      </span>
                     </span>
-                    <span style={{ fontFamily: "var(--mono)", fontSize: 12.5, fontWeight: 500, lineHeight: 1, color: "var(--ac)" }}>
-                      <span style={{ color: "var(--acd)" }}>:</span>
-                      {port}
-                    </span>
-                  </span>
-                </Fragment>
-              ))}
-            </span>
-          ) : (
-            <span
-              className="aurora-ws-offset"
-              title={`Port offset: +${offset}`}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: "2px 8px",
-                borderRadius: 6,
-                color: "var(--faint)",
-                border: "1px solid color-mix(in oklab, var(--acd) 18%, var(--line))",
-              }}
-            >
-              <PortIcon size={11} />
-              <span style={{ fontFamily: "var(--mono)", fontSize: 11.5, lineHeight: 1, color: "var(--acd)" }}>
-                <span style={{ color: "var(--faint)" }}>+</span>
-                {offset}
+                  </Fragment>
+                ))}
               </span>
-              <span style={{ fontFamily: "var(--sans)", fontSize: 10, color: "var(--faint)" }}>offset</span>
-            </span>
-          )}
-          {/* Run/Stop server toggle — visible only when the repo has ≥1 port-script.
-              Down: a posed pill that blooms to the accent ("go") on hover. Up: the
-              stop square breathes in --ok green to mark "running now", and surfaces
-              the --err danger tint only on hover/focus — the same neutral→intent idiom
-              as the teardown trash. Interactive states live in global.css. */}
+            ) : (
+              <span
+                className="aurora-ws-offset"
+                title={`Port offset: +${offset}`}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "2px 8px",
+                  borderRadius: 6,
+                  color: "var(--faint)",
+                  border: "1px solid color-mix(in oklab, var(--acd) 18%, var(--line))",
+                }}
+              >
+                <PortIcon size={11} />
+                <span style={{ fontFamily: "var(--mono)", fontSize: 11.5, lineHeight: 1, color: "var(--acd)" }}>
+                  <span style={{ color: "var(--faint)" }}>+</span>
+                  {offset}
+                </span>
+                <span style={{ fontFamily: "var(--sans)", fontSize: 10, color: "var(--faint)" }}>offset</span>
+              </span>
+            )}
+          </div>
+          {/* Run/Stop toggle: pinned outside the scroll region, always reachable. */}
           {servers.length > 0 && (
             <button
               type="button"
               className={`aurora-ws-runtoggle${up ? " aurora-ws-runtoggle--up" : ""}`}
               aria-label={up ? "Stop servers" : "Run servers"}
               title={`${up ? "Stop" : "Run"} ${units.length} server${units.length !== 1 ? "s" : ""}`}
+              style={{ flex: "0 0 auto" }}
               onClick={() => {
                 (up ? stopServers(ws.id) : runServers(ws.id)).catch((e: unknown) => {
                   useStore.getState().notify({
