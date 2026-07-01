@@ -5,16 +5,26 @@
 // the try body; every call after that is a no-op. To exercise all three try-
 // body outcomes (no update / update found+installed / check() throws) we load
 // three independent module instances via cache-busting query-string imports,
-// each with its own `@tauri-apps/plugin-updater` + `@tauri-apps/plugin-process`
-// mock.module override (re-registered right before each dynamic import). The
-// real Zustand store is used (not mocked) so we can assert on actual notify()
-// output.
+// each with its own tauri.setCheck()/tauri.setRelaunch() override (re-registered
+// right before each dynamic import) steering the shared Tauri mock's
+// plugin-updater/plugin-process exports. The real Zustand store is used (not
+// mocked) so we can assert on actual notify() output.
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { useStore } from "../src/state/store";
+import { tauri } from "../test/mocks/tauri";
 
 beforeEach(() => {
+  tauri.reset();
   useStore.setState({ notifs: [], notifLog: [], unseen: 0, muted: false }, false);
+});
+
+// bun's mock.module()-equivalent state here (tauri's check/relaunch overrides)
+// is process-global — clear it once this file is done so later files see the
+// default check()=>null / relaunch()=>no-op behavior, not this file's last
+// scenario.
+afterAll(() => {
+  tauri.reset();
 });
 
 describe("checkForUpdates", () => {
@@ -48,12 +58,10 @@ describe("checkForUpdates", () => {
   // more tests.
 
   it("check() throwing (unreachable endpoint / dev build) is swallowed silently — no notification, no throw", async () => {
-    mock.module("@tauri-apps/plugin-updater", () => ({
-      check: async () => {
-        throw new Error("fetch failed");
-      },
-    }));
-    mock.module("@tauri-apps/plugin-process", () => ({ relaunch: async () => {} }));
+    tauri.setCheck(async () => {
+      throw new Error("fetch failed");
+    });
+    tauri.setRelaunch(async () => {});
 
     const { checkForUpdates } = await import("../src/lib/updater.ts?scenario=check-throws");
     await expect(checkForUpdates()).resolves.toBeUndefined();
@@ -62,13 +70,11 @@ describe("checkForUpdates", () => {
 
   it("no update available: returns quietly, no notification; a second call is a no-op (ran guard)", async () => {
     let checkCalls = 0;
-    mock.module("@tauri-apps/plugin-updater", () => ({
-      check: async () => {
-        checkCalls++;
-        return null;
-      },
-    }));
-    mock.module("@tauri-apps/plugin-process", () => ({ relaunch: async () => {} }));
+    tauri.setCheck(async () => {
+      checkCalls++;
+      return null;
+    });
+    tauri.setRelaunch(async () => {});
 
     const { checkForUpdates } = await import("../src/lib/updater.ts?scenario=no-update");
     await checkForUpdates();
@@ -83,19 +89,15 @@ describe("checkForUpdates", () => {
   it("update found: notifies, downloads+installs, notifies again, then relaunches", async () => {
     let downloadCalls = 0;
     let relaunchCalls = 0;
-    mock.module("@tauri-apps/plugin-updater", () => ({
-      check: async () => ({
-        version: "1.2.3",
-        downloadAndInstall: async () => {
-          downloadCalls++;
-        },
-      }),
-    }));
-    mock.module("@tauri-apps/plugin-process", () => ({
-      relaunch: async () => {
-        relaunchCalls++;
+    tauri.setCheck(async () => ({
+      version: "1.2.3",
+      downloadAndInstall: async () => {
+        downloadCalls++;
       },
     }));
+    tauri.setRelaunch(async () => {
+      relaunchCalls++;
+    });
 
     const { checkForUpdates } = await import("../src/lib/updater.ts?scenario=update-found");
     await checkForUpdates();

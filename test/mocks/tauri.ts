@@ -69,6 +69,20 @@ let handlers: Record<string, InvokeHandler> = {};
 const calls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
 const listeners = new Map<string, Set<(e: { payload: unknown }) => void>>();
 
+// Direct (non-invoke) plugin exports that a handful of suites need to steer
+// per-test — e.g. plugin-dialog's open() result, plugin-updater's check(),
+// plugin-process's relaunch(), plugin-clipboard-manager's readText()/writeText().
+// These default to the same fixed behavior the preload always had; tests that
+// need a specific value/throw call the matching tauri.setX() instead of
+// re-registering their own mock.module() (which would leak process-wide).
+let overrides: {
+  open?: (opts?: unknown) => unknown;
+  check?: () => unknown;
+  relaunch?: () => unknown;
+  readText?: () => unknown;
+  writeText?: (text: string) => unknown;
+} = {};
+
 export const tauri = {
   /** When true, unmocked invoke() commands log a warning (test authoring aid). */
   warnUnmocked: false,
@@ -76,11 +90,32 @@ export const tauri = {
   invoke(map: Record<string, InvokeHandler>) {
     handlers = { ...handlers, ...map };
   },
+  /** Override @tauri-apps/plugin-dialog's open() (folder/file picker). */
+  setOpen(fn: (opts?: unknown) => unknown) {
+    overrides.open = fn;
+  },
+  /** Override @tauri-apps/plugin-updater's check(). */
+  setCheck(fn: () => unknown) {
+    overrides.check = fn;
+  },
+  /** Override @tauri-apps/plugin-process's relaunch(). */
+  setRelaunch(fn: () => unknown) {
+    overrides.relaunch = fn;
+  },
+  /** Override @tauri-apps/plugin-clipboard-manager's readText(). */
+  setReadText(fn: () => unknown) {
+    overrides.readText = fn;
+  },
+  /** Override @tauri-apps/plugin-clipboard-manager's writeText(text). */
+  setWriteText(fn: (text: string) => unknown) {
+    overrides.writeText = fn;
+  },
   /** Reset all per-test state — call in beforeEach. */
   reset() {
     handlers = {};
     calls.length = 0;
     listeners.clear();
+    overrides = {};
   },
   /** Inspect what the code invoked. */
   calls: () => calls.slice(),
@@ -126,9 +161,11 @@ export function getCurrentWindow() {
 
 // plugin-clipboard-manager
 export async function readText() {
-  return "";
+  return overrides.readText ? overrides.readText() : "";
 }
-export async function writeText(_t: string) {}
+export async function writeText(t: string) {
+  if (overrides.writeText) await overrides.writeText(t);
+}
 
 // plugin-opener
 export async function openUrl(_u: string) {}
@@ -137,16 +174,18 @@ export async function revealItemInDir(_p: string) {}
 
 // plugin-updater
 export async function check() {
-  return null;
+  return overrides.check ? overrides.check() : null;
 }
 
 // plugin-process
-export async function relaunch() {}
+export async function relaunch() {
+  if (overrides.relaunch) await overrides.relaunch();
+}
 export async function exit(_code?: number) {}
 
 // plugin-dialog
-export async function open(_o?: unknown) {
-  return null;
+export async function open(o?: unknown) {
+  return overrides.open ? overrides.open(o) : null;
 }
 export async function save(_o?: unknown) {
   return null;

@@ -12,33 +12,9 @@
 import { mock, describe, it, expect } from "bun:test";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
-// Must appear before any dynamic import that pulls in Tauri or xterm packages.
-
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: () => Promise.resolve(null),
-  transformCallback: () => 0,
-  convertFileSrc: (s: string) => s,
-  Channel: class {},
-  PluginListener: class {},
-  Resource: class {},
-}));
-mock.module("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => {}),
-  once: () => Promise.resolve(() => {}),
-  emit: () => Promise.resolve(),
-  emitTo: () => Promise.resolve(),
-  TauriEvent: {},
-}));
-mock.module("@tauri-apps/plugin-clipboard-manager", () => ({
-  readText: () => Promise.resolve(""),
-  writeText: () => Promise.resolve(),
-}));
-mock.module("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-mock.module("@tauri-apps/plugin-opener", () => ({ openUrl: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-process", () => ({ exit: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
-mock.module("@xterm/xterm", () => ({ Terminal: class {} }));
-mock.module("@xterm/addon-fit", () => ({ FitAddon: class {} }));
+// Must appear before any dynamic import. The preload (test/setup.ts) already
+// stubs every Tauri/xterm module the import chain touches, so only the STORE
+// needs a per-file override here.
 
 // Mutable cfg defaults — tests reassign to control the config layer of the
 // base-branch precedence chain. The factory captures the variable by reference,
@@ -83,6 +59,11 @@ mock.module("../src/state/store", () => ({
   MODEL_OPTIONS: [],
   DEFAULT_SETTINGS: {},
 }));
+
+// bun test automatically un-registers a file's own mock.module() calls once
+// that file's tests finish (verified empirically — no manual mock.restore()
+// needed, and calling it here would double-pop bun's internal mock stack and
+// corrupt state for later real-store files).
 
 // ── Load module under test ────────────────────────────────────────────────────
 type Preset = {

@@ -12,13 +12,16 @@
  *
  *  - 6.1 / 6.2: pure functions — no mocks at all.
  *
- *  - 6.3 – 6.5: bun's mock.module() is process-global and teardown.test.ts
- *    already mocks "../src/state/store" with a stripped shim (no setState, no
- *    createWorkspace, etc.). This file MUST re-register that path with a richer
- *    inline store so servers.ts/scripts.ts see the right API regardless of
- *    test-file execution order.
+ *  - 6.3 – 6.5: bun's mock.module() is process-global WHILE a file's tests are
+ *    running, but bun test automatically un-registers a file's own mock.module()
+ *    calls once that file finishes (verified empirically) — so teardown.test.ts's
+ *    "../src/state/store" stripped shim (no setState, no createWorkspace, etc.)
+ *    does not leak in here. This file still re-registers that path with a richer
+ *    inline store so servers.ts/scripts.ts see the right API while ITS OWN tests
+ *    run, regardless of file execution order.
  *
- *    Rule: only mock LEAVES (Tauri, xterm, theme, pty).
+ *    Rule: only mock LEAVES (pty). Tauri/xterm/theme are already fully stubbed
+ *    by the preload (test/setup.ts) — no per-file mock needed for those.
  *    "../src/lib/*" is NOT mocked — the real runServerScript/scriptsForRoot are
  *    used; only the Tauri-calling pty leaf is intercepted.
  */
@@ -222,30 +225,9 @@ mock.module("../src/state/store", () => ({
   },
 }));
 
-// Tauri / xterm / theme leaf stubs
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: () => Promise.resolve(null),
-  transformCallback: () => 0,
-  convertFileSrc: (s: string) => s,
-  Channel: class {},
-  PluginListener: class {},
-  Resource: class {},
-}));
-mock.module("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => {}),
-  once: () => Promise.resolve(() => {}),
-  emit: () => Promise.resolve(),
-  emitTo: () => Promise.resolve(),
-  TauriEvent: {},
-}));
-mock.module("@tauri-apps/plugin-clipboard-manager", () => ({ readText: () => Promise.resolve(""), writeText: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-mock.module("@tauri-apps/plugin-opener", () => ({ openUrl: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-process", () => ({ exit: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
-mock.module("@xterm/xterm", () => ({ Terminal: class {} }));
-mock.module("@xterm/addon-fit", () => ({ FitAddon: class {} }));
-mock.module("../src/lib/theme", () => ({ applyTheme: () => {}, ACCENTS: {}, FONT_SIZES: {} }));
+// The preload (test/setup.ts) already stubs every Tauri/xterm module and the
+// real theme.ts applyTheme() works fine under happy-dom, so no per-file mocks
+// are needed for those.
 // pty is a Tauri-calling leaf; mock it so pty.kill/captureServerPgid/serverStatus are interceptable.
 mock.module("../src/term/pty", () => ({
   pty: {
@@ -256,6 +238,11 @@ mock.module("../src/term/pty", () => ({
     serverStatus: ptyServerStatusMock,
   },
 }));
+
+// bun test automatically un-registers a file's own mock.module() calls once
+// that file's tests finish (verified empirically — no manual mock.restore()
+// needed, and calling it here would double-pop bun's internal mock stack and
+// corrupt state for later real-store files).
 
 // ── Dynamic imports after all mocks are registered ───────────────────────────
 const { serversUp, runServers, stopServers, ensureServerPoll, stopPoll } = await import("../src/lib/servers.ts");

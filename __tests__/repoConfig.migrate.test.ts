@@ -19,26 +19,17 @@
 import { mock, describe, it, expect } from "bun:test";
 
 // ── Module mocks ─────────────────────────────────────────────────────────────
-// Must be called before any dynamic import that pulls in Tauri packages.
-
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: () => Promise.resolve(null),
-}));
-mock.module("@tauri-apps/plugin-clipboard-manager", () => ({
-  readText: () => Promise.resolve(""),
-  writeText: () => Promise.resolve(),
-}));
-mock.module("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-mock.module("@tauri-apps/plugin-opener", () => ({ openUrl: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-process", () => ({ exit: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
-mock.module("@xterm/xterm", () => ({ Terminal: class {} }));
-mock.module("@xterm/addon-fit", () => ({ FitAddon: class {} }));
-
-// The store is imported by repoConfig.ts but not used by migrate() itself.
-// Mock it to short-circuit the full store+workspace+Tauri load.
+// Must be called before any dynamic import. The preload (test/setup.ts) already
+// stubs every Tauri/xterm module, so only the STORE needs a per-file override
+// here (repoConfig.ts imports it, but migrate() itself never touches it — mock
+// it to short-circuit the full store+workspace+Tauri load).
 // Path resolves to /…/aurora/src/state/store.ts (same resolution as the
 // relative import "../state/store" inside src/lib/repoConfig.ts).
+//
+// bun test automatically un-registers a file's own mock.module() calls once
+// that file's tests finish (verified empirically — no manual mock.restore()
+// needed, and calling it here would double-pop bun's internal mock stack and
+// corrupt state for later real-store files).
 mock.module("../src/state/store", () => ({
   useStore: {
     getState: () => ({ repoConfigs: {}, setRepoConfig: () => {} }),

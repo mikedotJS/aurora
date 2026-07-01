@@ -8,24 +8,17 @@
  * REAL Zustand store (a fresh workspace/pane per test via createWorkspace) so
  * assertions reflect real reducer behavior, not a re-implementation of it.
  */
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { tauri } from "../test/mocks/tauri";
 import { useStore, activeGroup, activeWorkspace, findPane, DEFAULT_SETTINGS, type PaneState } from "../src/state/store";
 import { handleKeyDown } from "../src/lib/keymap";
 import type { Suggestion } from "../src/ai/suggest";
 
 // ── Clipboard control (readText/writeText aren't routed through invoke(), so we
-// drive them via a dedicated mock.module override with mutable closures) ──────
+// drive them via tauri.setReadText()/setWriteText() with mutable closures) ────
 let clipboardText = "";
 let clipboardShouldThrow = false;
 let writeTextCalls: string[] = [];
-mock.module("@tauri-apps/plugin-clipboard-manager", () => ({
-  readText: () => (clipboardShouldThrow ? Promise.reject(new Error("clipboard denied")) : Promise.resolve(clipboardText)),
-  writeText: (t: string) => {
-    writeTextCalls.push(t);
-    return Promise.resolve();
-  },
-}));
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -64,6 +57,13 @@ beforeEach(() => {
   clipboardText = "";
   clipboardShouldThrow = false;
   writeTextCalls = [];
+  tauri.setReadText(() =>
+    clipboardShouldThrow ? Promise.reject(new Error("clipboard denied")) : Promise.resolve(clipboardText),
+  );
+  tauri.setWriteText((t: string) => {
+    writeTextCalls.push(t);
+    return Promise.resolve();
+  });
   useStore.setState({
     command: null,
     panel: null,
@@ -80,6 +80,13 @@ beforeEach(() => {
     // separate, dedicated describe block.)
     settings: { ...DEFAULT_SETTINGS, introSeen: true },
   });
+});
+
+// tauri.reset() (called in every beforeEach above) already clears the
+// setReadText()/setWriteText() overrides, but guard the tail end too so a file
+// that never calls tauri.reset() after this one can't inherit our last closures.
+afterAll(() => {
+  tauri.reset();
 });
 
 // ── Form-field guard ─────────────────────────────────────────────────────────

@@ -76,33 +76,14 @@ mock.module("../src/lib/sys", () => ({
   pathResolve: (p: string) => Promise.resolve(p),
 }));
 
-// Tauri stubs (imported transitively by store or other deps).
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: () => Promise.resolve(null),
-  transformCallback: () => 0,
-  convertFileSrc: (s: string) => s,
-  Channel: class {},
-  PluginListener: class {},
-  Resource: class {},
-}));
-mock.module("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => {}),
-  once: () => Promise.resolve(() => {}),
-  emit: () => Promise.resolve(),
-  emitTo: () => Promise.resolve(),
-  TauriEvent: {},
-}));
-mock.module("@tauri-apps/plugin-clipboard-manager", () => ({
-  readText: () => Promise.resolve(""),
-  writeText: () => Promise.resolve(),
-}));
-mock.module("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-mock.module("@tauri-apps/plugin-opener", () => ({ openUrl: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-process", () => ({ exit: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
-mock.module("@xterm/xterm", () => ({ Terminal: class {} }));
-mock.module("@xterm/addon-fit", () => ({ FitAddon: class {} }));
-mock.module("../src/lib/theme", () => ({ applyTheme: () => {}, ACCENTS: {}, FONT_SIZES: {} }));
+// The preload (test/setup.ts) already stubs every Tauri/xterm module and the
+// real theme.ts applyTheme() works fine under happy-dom, so no per-file mocks
+// are needed for those — only the 4 behavior mocks above (store/pty/worktree/sys).
+//
+// bun test automatically un-registers a file's own mock.module() calls once
+// that file's tests finish (verified empirically — no manual mock.restore()
+// needed, and calling it here would double-pop bun's internal mock stack and
+// corrupt state for later real-store files).
 
 // ── Load the real orchestrator after mocks ────────────────────────────────────
 

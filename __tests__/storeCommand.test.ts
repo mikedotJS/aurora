@@ -13,49 +13,17 @@
  *     Both actions must be no-ops when command is null.
  */
 
-import { mock, describe, it, expect, beforeEach } from "bun:test";
-
-// ── Module mocks ─────────────────────────────────────────────────────────────
-
-mock.module("@tauri-apps/api/core", () => ({
-  invoke: () => Promise.resolve(null),
-  transformCallback: () => 0,
-  convertFileSrc: (s: string) => s,
-  Channel: class {},
-  PluginListener: class {},
-  Resource: class {},
-}));
-mock.module("@tauri-apps/api/event", () => ({
-  listen: () => Promise.resolve(() => {}),
-  once: () => Promise.resolve(() => {}),
-  emit: () => Promise.resolve(),
-  emitTo: () => Promise.resolve(),
-  TauriEvent: {},
-}));
-mock.module("@tauri-apps/plugin-clipboard-manager", () => ({
-  readText: () => Promise.resolve(""),
-  writeText: () => Promise.resolve(),
-}));
-mock.module("@tauri-apps/plugin-dialog", () => ({ open: () => Promise.resolve(null) }));
-mock.module("@tauri-apps/plugin-opener", () => ({ openUrl: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-process", () => ({ exit: () => Promise.resolve() }));
-mock.module("@tauri-apps/plugin-updater", () => ({ check: () => Promise.resolve(null) }));
-mock.module("@xterm/xterm", () => ({ Terminal: class {} }));
-mock.module("@xterm/addon-fit", () => ({ FitAddon: class {} }));
-
-// theme.ts calls document.documentElement which is not available in Bun's
-// non-browser test env. Mock it to a no-op so store.ts can be imported safely.
-mock.module("../src/lib/theme", () => ({
-  applyTheme: () => {},
-  ACCENTS: {},
-  FONT_SIZES: {},
-}));
+import { describe, it, expect, beforeEach } from "bun:test";
 
 // ── Load the actual store ─────────────────────────────────────────────────────
-// NOTE: co-located with the init/boot-lane tests below because this is the file
-// whose REAL-store import survives the full-suite run (bun's mock.module for
-// "../src/state/store" — registered by teardown/runServers/buildCreateSpec — leaks
-// globally; a separate real-store file gets the mock instead and loses `init`).
+// The preload (test/setup.ts) already stubs every Tauri/xterm module the store
+// import chain touches, and the real theme.ts applyTheme() works fine under
+// happy-dom — no per-file module mocks needed.
+//
+// NOTE: co-located with the init/boot-lane tests below because this is a file
+// whose REAL-store import must survive the full-suite run (bun's mock.module for
+// "../src/state/store" — registered by teardown/runServers/buildCreateSpec — is
+// process-global; those files restore it via afterAll so it doesn't leak here).
 const storeMod = (await import("../src/state/store")) as typeof import("../src/state/store");
 const { useStore, activeWorkspace, activePane, activeGroup } = storeMod;
 const { statusOf, statusLine } = (await import("../src/lib/workspace")) as typeof import("../src/lib/workspace");

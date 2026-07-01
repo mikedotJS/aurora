@@ -1,35 +1,35 @@
 // Coverage suite for src/lib/repo.ts — "Add a repository" folder-pick flow.
 //
-// The shared Tauri mock hardcodes plugin-dialog's `open()` to always resolve
+// The shared Tauri mock's plugin-dialog `open()` defaults to always resolving
 // null (see test/mocks/tauri.ts), so there's no way to reach the
-// picked/cancelled branches of pickFolder() through it. We re-register
-// @tauri-apps/plugin-dialog with a controllable `open` BEFORE importing
-// src/lib/repo.ts (module mocks apply to subsequent dynamic imports).
+// picked/cancelled branches of pickFolder() through defaults alone. We steer
+// it per-test via tauri.setOpen() instead of re-registering the whole module.
 
-import { mock, describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { tauri } from "../test/mocks/tauri";
-
-let openResult: unknown = null;
-let openArgs: unknown[] = [];
-mock.module("@tauri-apps/plugin-dialog", () => ({
-  open: (...args: unknown[]) => {
-    openArgs.push(args[0]);
-    return Promise.resolve(openResult);
-  },
-  save: () => Promise.resolve(null),
-  ask: () => Promise.resolve(true),
-  confirm: () => Promise.resolve(true),
-  message: () => Promise.resolve(undefined),
-}));
 
 const { pickFolder, addRepoFromFolder } = await import("../src/lib/repo");
 const { useStore } = await import("../src/state/store");
+
+let openResult: unknown = null;
+let openArgs: unknown[] = [];
 
 beforeEach(() => {
   tauri.reset();
   openResult = null;
   openArgs = [];
+  tauri.setOpen((opts) => {
+    openArgs.push(opts);
+    return Promise.resolve(openResult);
+  });
   useStore.setState({ repos: [] }, false);
+});
+
+// tauri.reset() (called in every beforeEach above) already clears the setOpen()
+// override, but guard the tail end too so a file that never calls tauri.reset()
+// after this one can't inherit our last openResult/openArgs closure.
+afterAll(() => {
+  tauri.reset();
 });
 
 describe("pickFolder", () => {
