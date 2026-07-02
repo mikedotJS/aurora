@@ -67,6 +67,7 @@ function mkWs(overrides: Partial<Workspace> = {}): Workspace {
   const group = mkGroup([pane]);
   return {
     id: nextId("w"),
+    kind: "workspace",
     repoId: null,
     title: "ws",
     issueKey: null,
@@ -147,6 +148,7 @@ const SETTINGS = DEFAULT_SETTINGS;
 function repoPersisted(overrides: Partial<PersistedWs> = {}): PersistedWs {
   return {
     id: "w-restored",
+    kind: "workspace",
     repoId: "/repo/gody",
     title: "GODY-1",
     issueKey: "GODY-1",
@@ -164,8 +166,29 @@ function repoPersisted(overrides: Partial<PersistedWs> = {}): PersistedWs {
   };
 }
 
+function homePersisted(overrides: Partial<PersistedWs> = {}): PersistedWs {
+  return {
+    id: "w-home-restored",
+    kind: "home",
+    repoId: null,
+    title: "Home",
+    issueKey: null,
+    branch: null,
+    baseBranch: "",
+    dir: HOME,
+    preset: null,
+    jiraStatus: null,
+    jiraUrl: null,
+    jiraSync: false,
+    env: {},
+    createdAt: 1,
+    lastActive: 2,
+    ...overrides,
+  };
+}
+
 describe("init", () => {
-  it("boot.repo set + nothing restored: creates & unshifts a boot lane, becomes active", () => {
+  it("boot.repo set + nothing restored: creates & unshifts a boot lane, becomes active; Home is present but not active", () => {
     const boot: BootInfo = {
       repo: { root: "/repo/a", name: "a", defaultBranch: "main", currentBranch: "feat" },
       restored: [],
@@ -173,13 +196,20 @@ describe("init", () => {
     };
     useStore.getState().init(HOME, SETTINGS, true, boot);
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(1);
-    expect(s.workspaces[0].repoId).toBe("/repo/a");
-    expect(s.workspaces[0].branch).toBe("feat");
-    expect(s.activeWs).toBe(s.workspaces[0].id);
+    // The repo boot lane + the always-present Home terminal.
+    expect(s.workspaces).toHaveLength(2);
+    const bootWs = s.workspaces.find((w) => w.repoId === "/repo/a")!;
+    expect(bootWs.branch).toBe("feat");
+    expect(s.activeWs).toBe(bootWs.id);
     expect(s.initialized).toBe(true);
     expect(s.apiKeyPresent).toBe(true);
     expect(s.home).toBe(HOME);
+    // Home exists but isn't active/focused.
+    const home = s.workspaces.find((w) => w.kind === "home")!;
+    expect(home).toBeDefined();
+    expect(home.repoId).toBeNull();
+    expect(home.dir).toBe(HOME);
+    expect(s.activeWs).not.toBe(home.id);
   });
 
   it("boot.repo already among restored (same dir): reused, not duplicated", () => {
@@ -190,17 +220,49 @@ describe("init", () => {
     };
     useStore.getState().init(HOME, SETTINGS, false, boot);
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(1);
+    // The restored repo lane + the synthesized Home terminal.
+    expect(s.workspaces).toHaveLength(2);
+    expect(s.workspaces.filter((w) => w.repoId === "/repo/gody")).toHaveLength(1);
     expect(s.activeWs).toBe("w-restored");
   });
 
-  it("no boot.repo, nothing restored: zero workspaces, activeWs null (empty state)", () => {
+  it("boot.repo.root === home dir (e.g. ~ is a dotfiles git repo): a real repo lane is created/activated, and Home stays present and distinct — not stolen by the dir match", () => {
+    const boot: BootInfo = {
+      repo: { root: HOME, name: "dotfiles", defaultBranch: "main", currentBranch: "main" },
+      restored: [],
+      activeWs: null,
+    };
+    useStore.getState().init(HOME, SETTINGS, false, boot);
+    const s = useStore.getState();
+    // Two distinct workspaces: the repo boot lane rooted at `~`, and Home —
+    // never collapsed into one via an unqualified `dir` match.
+    expect(s.workspaces).toHaveLength(2);
+    const repoLane = s.workspaces.find((w) => w.kind === "workspace")!;
+    expect(repoLane).toBeDefined();
+    expect(repoLane.dir).toBe(HOME);
+    expect(repoLane.repoId).toBe(HOME);
+    const home = s.workspaces.find((w) => w.kind === "home")!;
+    expect(home).toBeDefined();
+    expect(home.id).not.toBe(repoLane.id);
+    expect(home.repoId).toBeNull();
+    expect(home.dir).toBe(HOME);
+    // The repo boot lane wins focus (a repo launch is a real context), Home is
+    // present but not active.
+    expect(s.activeWs).toBe(repoLane.id);
+    expect(s.activeWs).not.toBe(home.id);
+  });
+
+  it("no boot.repo, nothing restored: Home is synthesized and becomes active (never activeWs=null)", () => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(0);
-    expect(s.activeWs).toBeNull();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces[0].kind).toBe("home");
+    expect(s.workspaces[0].repoId).toBeNull();
+    expect(s.workspaces[0].dir).toBe(HOME);
+    expect(s.activeWs).toBe(s.workspaces[0].id);
+    expect(s.activeWs).not.toBeNull();
     expect(s.initialized).toBe(true);
-    expect(activeWorkspace(s)).toBeUndefined();
+    expect(activeWorkspace(s)).toBeDefined();
   });
 
   it("restored only, valid boot.activeWs: uses it directly (first ternary branch)", () => {
@@ -208,13 +270,36 @@ describe("init", () => {
     expect(useStore.getState().activeWs).toBe("w-restored");
   });
 
-  it("restored only, invalid boot.activeWs: falls back to workspaces[0]", () => {
+  it("restored only, invalid boot.activeWs: falls back to the Home terminal, not workspaces[0]", () => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [repoPersisted()], activeWs: "nope" });
     const s = useStore.getState();
-    expect(s.activeWs).toBe("w-restored");
+    const home = s.workspaces.find((w) => w.kind === "home")!;
+    expect(s.activeWs).toBe(home.id);
   });
 
-  it("mounts only the active workspace; others stay unmounted", () => {
+  it("restored Home is reused, not duplicated (exactly one kind:home after init)", () => {
+    useStore.getState().init(HOME, SETTINGS, false, {
+      repo: null,
+      restored: [homePersisted(), repoPersisted()],
+      activeWs: "w-home-restored",
+    });
+    const s = useStore.getState();
+    expect(s.workspaces.filter((w) => w.kind === "home")).toHaveLength(1);
+    expect(s.workspaces.find((w) => w.kind === "home")!.id).toBe("w-home-restored");
+    expect(s.activeWs).toBe("w-home-restored");
+  });
+
+  it("legacy persisted data with no `kind` loads without error; entries default to kind:workspace and Home is ensured", () => {
+    // Simulate a pre-home-terminal persisted record: no `kind` field at all.
+    const legacy = repoPersisted() as PersistedWs & { kind?: "home" | "workspace" };
+    delete legacy.kind;
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [legacy], activeWs: null });
+    const s = useStore.getState();
+    expect(s.workspaces.find((w) => w.id === "w-restored")!.kind).toBe("workspace");
+    expect(s.workspaces.filter((w) => w.kind === "home")).toHaveLength(1);
+  });
+
+  it("mounts only the active workspace; others (including Home) stay unmounted", () => {
     useStore.getState().init(HOME, SETTINGS, false, {
       repo: null,
       restored: [repoPersisted(), repoPersisted({ id: "w-2", dir: "/repo/two", repoId: "/repo/two", title: "two" })],
@@ -223,6 +308,7 @@ describe("init", () => {
     const s = useStore.getState();
     expect(s.workspaces.filter((w) => w.mounted)).toHaveLength(1);
     expect(s.workspaces.find((w) => w.mounted)!.id).toBe("w-2");
+    expect(s.workspaces.find((w) => w.kind === "home")!.mounted).toBe(false);
   });
 
   it("merges persisted repos (localStorage) with the boot repo and derived workspace repos", () => {
@@ -235,6 +321,8 @@ describe("init", () => {
     const s = useStore.getState();
     const ids = s.repos.map((r) => r.id).sort();
     expect(ids).toEqual(["/repo/a", "/repo/extra", "/repo/gody"].sort());
+    // The Home terminal never contributes a repo (repoId: null is ignored by deriveRepos).
+    expect(ids).not.toContain(HOME);
   });
 
   it("persists the derived boot state (readable back via loadPersisted)", () => {
@@ -323,6 +411,18 @@ describe("adoptRepo", () => {
     expect(s.workspaces[0].baseBranch).toBe("release");
     expect(s.repos).toHaveLength(1);
   });
+
+  it("never adopts a repo into the Home terminal, even though repoId is null", () => {
+    resetStore({
+      workspaces: [mkWs({ id: "home", kind: "home", repoId: null, baseBranch: "" })],
+      activeWs: "home",
+    });
+    useStore.getState().adoptRepo("home", { root: "/some/repo", name: "some", defaultBranch: "main" });
+    const s = useStore.getState();
+    expect(s.workspaces[0].repoId).toBeNull();
+    expect(s.workspaces[0].kind).toBe("home");
+    expect(s.repos).toHaveLength(0);
+  });
 });
 
 describe("addRepo", () => {
@@ -398,6 +498,17 @@ describe("removeWorkspace", () => {
     const s = useStore.getState();
     expect(s.workspaces.map((w) => w.id)).toEqual(["w1", "w3"]);
     expect(s.activeWs).toBe("w3"); // idx=1 clamped to length-1=1 -> w3
+  });
+
+  it("refuses to remove the Home terminal even with other workspaces present", () => {
+    resetStore({
+      workspaces: [mkWs({ id: "home", kind: "home", repoId: null }), mkWs({ id: "w1" })],
+      activeWs: "home",
+    });
+    useStore.getState().removeWorkspace("home");
+    const s = useStore.getState();
+    expect(s.workspaces.map((w) => w.id)).toEqual(["home", "w1"]);
+    expect(s.activeWs).toBe("home");
   });
 });
 

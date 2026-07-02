@@ -144,20 +144,22 @@ describe("openCommand + command actions — combined round-trip", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// init() boot-lane logic — empty-startup-state
+// init() boot-lane logic — superseded at boot by home-terminal
 //
-// init() creates+unshifts a boot lane ONLY when boot.repo is a real repo
-// checkout — a repo launch is a real context. It NEVER synthesizes a manual
-// "home" lane anymore: 0 repo context + 0 restored workspaces settles on
-// `workspaces = []`, `activeWs = null`, `initialized = true` (the empty state).
-// This supersedes the prior "keep a lane when workspaces.length === 0"
-// fallback. With restored repo workspaces and no boot repo, NO manual "home"
-// lane is created either, and an undefined bootWs must never crash activeWs
-// computation.
+// init() creates+unshifts a repo boot lane ONLY when boot.repo is a real repo
+// checkout — a repo launch is a real context. It additionally ALWAYS ensures a
+// permanent, singleton Home terminal (`kind: "home"`, repoId: null, rooted at
+// the user's home dir) exists — reusing a restored one (matched by `kind`) or
+// synthesizing one. This supersedes empty-startup-state's prior "0 repo
+// context + 0 restored settles on workspaces = [], activeWs = null" outcome:
+// a contextless boot now lands on the Home terminal instead (see
+// openspec/changes/home-terminal design.md D2/D5). An undefined bootWs must
+// still never crash activeWs computation.
 //
-// A repoId:null ("manual") lane can still exist — but only via the surviving
-// creation path, createWorkspace({ repoId: null, ... }) — and the render path
-// (derived selectors + pure status/port helpers) must stay null-safe for it.
+// A repoId:null ("manual") lane distinct from Home can still exist — via the
+// surviving creation path, createWorkspace({ repoId: null, ... }) — and the
+// render path (derived selectors + pure status/port helpers) must stay
+// null-safe for it, same as before.
 // ══════════════════════════════════════════════════════════════════════════════
 
 const HOME = "/Users/michaelromain";
@@ -179,52 +181,68 @@ describe("init boot-lane — empty-startup-state", () => {
     expect(typeof useStore.getState().init).toBe("function");
   });
 
-  it("repo lane: boot.repo set, nothing restored → one repo lane, active, no home lane", () => {
+  it("repo lane: boot.repo set, nothing restored → one repo lane active, plus the always-present Home terminal", () => {
     const boot: BootInfo = { repo: { root: "/repo", name: "repo", defaultBranch: "main", currentBranch: "main" }, restored: [], activeWs: null };
     useStore.getState().init(HOME, SETTINGS, false, boot);
     const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(2);
+    const bootWs = s.workspaces.find((w) => w.repoId === "/repo")!;
+    expect(bootWs).toBeDefined();
+    expect(s.activeWs).toBe(bootWs.id);
+    expect(s.initialized).toBe(true);
+    // The Home terminal is present but not active.
+    const home = s.workspaces.find((w) => w.kind === "home")!;
+    expect(home).toBeDefined();
+    expect(home.repoId).toBeNull();
+    expect(s.activeWs).not.toBe(home.id);
+  });
+
+  it("contextless boot: no repo, nothing restored → the Home terminal is synthesized and active (never activeWs=null)", () => {
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    const s = useStore.getState();
     expect(s.workspaces).toHaveLength(1);
-    expect(s.workspaces[0].repoId).toBe("/repo");
+    expect(s.workspaces[0].kind).toBe("home");
+    expect(s.workspaces[0].repoId).toBeNull();
+    expect(s.workspaces[0].dir).toBe(HOME);
     expect(s.activeWs).toBe(s.workspaces[0].id);
-    expect(s.workspaces.some((w) => w.repoId === null)).toBe(false);
+    expect(s.activeWs).not.toBeNull();
     expect(s.initialized).toBe(true);
+    expect(activeWorkspace(s)).toBeDefined();
   });
 
-  it("empty startup: no repo, nothing restored → zero workspaces, activeWs null, initialized true", () => {
+  it("contextless boot persists across a relaunch: Home is reused, not duplicated, on the second init", () => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    const firstHomeId = useStore.getState().workspaces[0].id;
+    // Simulate the next launch: persisted Home comes back through `restored`.
+    const persistedHome = useStore.getState().workspaces.map((w) => ({
+      id: w.id, kind: w.kind, repoId: w.repoId, title: w.title, issueKey: w.issueKey,
+      branch: w.branch, baseBranch: w.baseBranch, dir: w.dir, preset: w.preset,
+      jiraStatus: w.jiraStatus, jiraUrl: w.jiraUrl, jiraSync: w.jiraSync, env: w.env,
+      createdAt: w.createdAt, lastActive: w.lastActive,
+    }));
+    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: persistedHome, activeWs: firstHomeId });
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(0);
-    expect(s.activeWs).toBeNull();
-    expect(s.initialized).toBe(true);
-    expect(activeWorkspace(s)).toBeUndefined();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces[0].id).toBe(firstHomeId);
+    expect(s.activeWs).toBe(firstHomeId);
   });
 
-  it("empty startup persists across a relaunch (re-running init with the same empty boot stays empty)", () => {
-    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
-    useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
-    const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(0);
-    expect(s.activeWs).toBeNull();
-  });
-
-  it("restored repo lane + no boot repo → NO 'michaelromain' home lane; restored active", () => {
+  it("restored repo lane + no boot repo → restored lane active, plus the always-present Home terminal", () => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [repoWs()], activeWs: "w-gody" });
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(1);
-    expect(s.workspaces[0].id).toBe("w-gody");
+    expect(s.workspaces).toHaveLength(2);
+    expect(s.workspaces.some((w) => w.id === "w-gody")).toBe(true);
     expect(s.activeWs).toBe("w-gody");
-    expect(s.workspaces.some((w) => w.repoId === null)).toBe(false);
-    expect(s.workspaces.some((w) => w.title === "michaelromain")).toBe(false);
+    expect(s.workspaces.filter((w) => w.kind === "home")).toHaveLength(1);
   });
 
-  it("restored lane + invalid activeWs → falls back to workspaces[0]; no crash on undefined bootWs; no home lane", () => {
+  it("restored lane + invalid activeWs → falls back to the Home terminal, not workspaces[0]; no crash on undefined bootWs", () => {
     expect(() =>
       useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [repoWs()], activeWs: "does-not-exist" }),
     ).not.toThrow();
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(1);
-    expect(s.activeWs).toBe("w-gody");
-    expect(s.workspaces.some((w) => w.title === "michaelromain")).toBe(false);
+    const home = s.workspaces.find((w) => w.kind === "home")!;
+    expect(s.activeWs).toBe(home.id);
   });
 
   it("boot repo already among restored (same dir) → reused, not duplicated", () => {
@@ -233,11 +251,11 @@ describe("init boot-lane — empty-startup-state", () => {
       restored: [repoWs()], activeWs: "w-gody",
     });
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces.filter((w) => w.id === "w-gody")).toHaveLength(1);
     expect(s.activeWs).toBe("w-gody");
   });
 
-  it("exactly one workspace is mounted (the active one)", () => {
+  it("exactly one workspace is mounted (the active one); Home stays unmounted when not active", () => {
     useStore.getState().init(HOME, SETTINGS, false, {
       repo: null,
       restored: [repoWs(), repoWs({ id: "w-2", dir: "/Users/michaelromain/Dev/two", repoId: "/Users/michaelromain/Dev/two", title: "two" })],
@@ -246,14 +264,17 @@ describe("init boot-lane — empty-startup-state", () => {
     const s = useStore.getState();
     expect(s.workspaces.filter((w) => w.mounted)).toHaveLength(1);
     expect(s.workspaces.find((w) => w.mounted)!.id).toBe("w-2");
+    expect(s.workspaces.find((w) => w.kind === "home")!.mounted).toBe(false);
   });
 });
 
 describe("manual lane (repoId:null) is null-safe — regression", () => {
-  // init() never synthesizes a manual/home lane anymore (empty-startup-state).
-  // The only surviving way to get a repoId:null workspace is an explicit
-  // createWorkspace({ repoId: null, ... }) call — start from the empty state,
-  // then create one, to keep this regression coverage alive.
+  // init() no longer synthesizes a manual lane on a contextless boot — it
+  // synthesizes the permanent Home terminal instead (kind: "home"). A
+  // repoId:null "manual" lane distinct from Home is still only created via an
+  // explicit createWorkspace({ repoId: null, ... }) call — start from a
+  // contextless boot (which now lands on Home), then create a manual lane on
+  // top, to keep this regression coverage alive.
   beforeEach(() => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
     useStore.getState().createWorkspace({ repoId: null, title: "manual", dir: HOME, branch: null });
@@ -290,34 +311,40 @@ describe("manual lane (repoId:null) is null-safe — regression", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Empty state — exit path + the non-goal guard
+// createWorkspace on top of a contextless (Home-only) boot + the non-goal guard
 // ══════════════════════════════════════════════════════════════════════════════
 
-describe("empty state — createWorkspace is the exit path", () => {
-  it("createWorkspace from an empty store sets activeWs to the new workspace's id", () => {
+describe("createWorkspace on top of the Home-only boot", () => {
+  it("createWorkspace from a Home-only store sets activeWs to the new workspace's id", () => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
-    expect(useStore.getState().workspaces).toHaveLength(0);
-    expect(useStore.getState().activeWs).toBeNull();
+    expect(useStore.getState().workspaces).toHaveLength(1);
+    expect(useStore.getState().workspaces[0].kind).toBe("home");
+    expect(useStore.getState().activeWs).not.toBeNull();
 
     const id = useStore.getState().createWorkspace({ repoId: null, title: "first", dir: HOME, branch: null });
     const s = useStore.getState();
-    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces).toHaveLength(2); // Home + the new lane
     expect(s.activeWs).toBe(id);
     expect(activeWorkspace(s)!.id).toBe(id);
   });
 });
 
-describe("removeWorkspace never drops to the empty state (non-goal guard)", () => {
-  it("refuses to remove the last remaining workspace", () => {
+describe("removeWorkspace never drops below the Home terminal (non-goal guard)", () => {
+  it("refuses to remove the last remaining non-Home workspace's neighbor guard still holds, and Home itself is never removable", () => {
     useStore.getState().init(HOME, SETTINGS, false, { repo: null, restored: [], activeWs: null });
+    const homeId = useStore.getState().workspaces[0].id;
     const id = useStore.getState().createWorkspace({ repoId: null, title: "only", dir: HOME, branch: null });
-    expect(useStore.getState().workspaces).toHaveLength(1);
+    expect(useStore.getState().workspaces).toHaveLength(2);
 
+    // Home itself refuses removal even with >1 workspace present.
+    useStore.getState().removeWorkspace(homeId);
+    expect(useStore.getState().workspaces.some((w) => w.id === homeId)).toBe(true);
+
+    // The ordinary lane can still be removed (Home remains as the floor).
     useStore.getState().removeWorkspace(id);
     const s = useStore.getState();
     expect(s.workspaces).toHaveLength(1);
-    expect(s.workspaces[0].id).toBe(id);
-    expect(s.activeWs).toBe(id);
+    expect(s.workspaces[0].id).toBe(homeId);
   });
 });
 

@@ -18,12 +18,18 @@ export async function deleteWorkspace(id: string): Promise<TeardownResult> {
   const w = state.workspaces.find((x) => x.id === id);
   if (!w) return { ok: false, error: "workspace not found" };
 
-  // 2. Guard: never remove the last workspace.
+  // 2. Guard: the Home terminal is permanent — refuse before any teardown,
+  //    independent of workspace count (it has no worktree/PTY steps to reach).
+  if (w.kind === "home") {
+    return { ok: false, error: "the Home terminal cannot be removed" };
+  }
+
+  // 3. Guard: never remove the last workspace.
   if (state.workspaces.length <= 1) {
     return { ok: false, error: "cannot remove the last workspace" };
   }
 
-  // 3. Determine removability BEFORE touching any PTYs.
+  // 4. Determine removability BEFORE touching any PTYs.
   //    Manual lanes (repoId == null) have no worktree — closeable but not worktree-backed.
   //    For repo-linked workspaces: verify `dir` is a registered *secondary* worktree.
   //    We check via git's own registry (`worktree_list`) rather than a naive string comparison
@@ -51,14 +57,14 @@ export async function deleteWorkspace(id: string): Promise<TeardownResult> {
     worktreeBacked = true;
   }
 
-  // 4. Kill all PTYs (fires the Rust group teardown for each).
+  // 5. Kill all PTYs (fires the Rust group teardown for each).
   //    Only reached after confirming the worktree is removable (or it is a manual lane).
   const ptyIds = w.tabs.flatMap((tab) =>
     tab.panes.map((p) => p.ptyId).filter((pid): pid is string => pid !== null),
   );
   await Promise.all(ptyIds.map((pid) => pty.kill(pid)));
 
-  // 5. Remove the worktree (worktree-backed only).
+  // 6. Remove the worktree (worktree-backed only).
   if (worktreeBacked) {
     const r = await worktreeRemove(w.repoId!, w.dir, true);
     if (!r.ok) {
@@ -67,7 +73,7 @@ export async function deleteWorkspace(id: string): Promise<TeardownResult> {
     }
   }
 
-  // 6. Drop from store + re-point active.
+  // 7. Drop from store + re-point active.
   useStore.getState().removeWorkspace(id);
   return { ok: true };
 }

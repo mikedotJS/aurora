@@ -144,6 +144,122 @@ select {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--err) 45%, transparent);
 }
 
+/* The Home terminal's title-bar entry — a top-level front door to the always-on
+   ~ shell, sitting just past the traffic lights and decoupled from the Workspaces
+   zone. The visible label is the ~ glyph alone; an aria-label/title carry the
+   descriptive "Home terminal" name for assistive tech. Everything (fill, border,
+   glow) stays *inside* the button's own radius — no protruding accent rule — so
+   the active state reads as an intentional lit control, not a bar bleeding past a
+   rounded corner. The ~ is held in a fixed square so the glyph centres optically
+   (a bare monospace ~ sits high and drifts). */
+.aurora-titlebar-home {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+.aurora-titlebar-home:hover:not(.aurora-titlebar-home--active) {
+  background: color-mix(in oklab, var(--ac) 8%, transparent);
+  border-color: color-mix(in oklab, var(--acd) 26%, var(--line));
+}
+/* Active: an accent-tinted fill + accent-toned border, both contained by the
+   radius, plus a soft accent underglow. No absolutely-positioned rule. */
+.aurora-titlebar-home--active {
+  cursor: default;
+  background: color-mix(in oklab, var(--ac) 15%, transparent);
+  border-color: color-mix(in oklab, var(--ac) 42%, var(--line));
+  box-shadow: 0 0 12px -4px var(--ac);
+}
+/* The ~ glyph itself: dim when idle, accent when active, optically centred in
+   the square button (monospace ~ sits high, so the flex-centre + line-height:1
+   settle it). */
+.aurora-titlebar-home__glyph {
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--dim);
+  transition: color 0.12s ease;
+}
+.aurora-titlebar-home:hover .aurora-titlebar-home__glyph,
+.aurora-titlebar-home--active .aurora-titlebar-home__glyph {
+  color: var(--ac);
+}
+.aurora-titlebar-home:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ac) 40%, transparent);
+}
+
+/* Rail empty state — the zero-repo onboarding shown when no repo exists yet.
+   The single geste in this state is "add a repository" (a workspace can't exist
+   without one), so the block *is* the primary CTA: a short title, the accent
+   .aurora-empty-primary button, and one quiet shell-voiced reassurance line — no
+   prose, no "↓ below" pointer. Centred in the scroll area so the CTA sits where
+   the eye lands instead of stranding a vertical void. Deliberately unlike the
+   repo cards below — this is an invitation, not a lane. */
+.aurora-rail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 14px;
+  min-height: 100%;
+  padding: 24px 16px;
+  text-align: center;
+}
+.aurora-rail-empty-title {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+/* Rides the app's primary-CTA idiom (.aurora-empty-primary); this only carries
+   the ⇋ glyph's size. Layout/fill/glow/focus/disabled all come from that class. */
+.aurora-rail-empty-cta .aurora-rail-empty-plus {
+  font-size: 13px;
+  line-height: 1;
+}
+/* The reassurance: the ~ shell is still there. Terminal-voiced (a shell comment),
+   kept faint so it never rivals the CTA. */
+.aurora-rail-empty-hint {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.5;
+  letter-spacing: 0.01em;
+  color: var(--faint);
+}
+.aurora-rail-empty-hint .aurora-rail-empty-hash {
+  color: var(--acd);
+  margin-right: 6px;
+}
+/* Add-repo failure, in the CTA's place — same slot, danger-toned. */
+.aurora-rail-empty-error {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--err);
+  padding: 0 2px;
+}
+/* The no-match note keeps the old quiet, centred treatment. */
+.aurora-rail-nomatch {
+  padding: 18px 16px;
+  text-align: center;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--faint);
+}
+
 /* The xterm canvas/viewport inside an Aurora pane. */
 .aurora-term {
   height: 100%;
@@ -166,30 +282,11 @@ select {
   background: transparent;
 }
 
-/* Empty-state (0-workspace boot surface) — the first screen a new user meets.
-   Structural layout lives inline in EmptyState.tsx; these classes own what inline
-   styles can't express: the panel's entrance, the live prompt caret, and the
-   hover / focus-visible / disabled states of the two actions. The colour
-   vocabulary is borrowed on purpose — the primary reuses the run-toggle's tinted
-   accent idiom, the secondary reuses the rail's dashed "+ New workspace" slot. */
-.aurora-empty {
-  animation: rise 0.42s ease both;
-}
-
-/* The live shell caret trailing the wordmark — the page's signature. Reuses the
-   shared `blink` keyframe (hard on/off) so it reads as a real terminal cursor. */
-.aurora-empty__caret {
-  display: inline-block;
-  width: 7px;
-  height: 20px;
-  border-radius: 1.5px;
-  background: var(--ac);
-  box-shadow: 0 0 12px color-mix(in oklab, var(--ac) 60%, transparent);
-  animation: blink 1.15s step-end infinite;
-}
-
-/* Primary action — accent-tinted with a soft bloom so it reads as the one thing
-   to do, without introducing a solid fill the rest of Aurora never uses. */
+/* Primary-CTA idiom, accent-tinted with a soft bloom so it reads as the one
+   thing to do, without introducing a solid fill the rest of Aurora never uses.
+   Originally the empty-state's "Add repository" button (that surface is now
+   removed — Home replaces it, see home-terminal); kept because WorkspacesIntro
+   still rides this class for its own primary action (.aurora-intro-cta). */
 .aurora-empty-primary {
   display: flex;
   align-items: center;
@@ -227,48 +324,6 @@ select {
   cursor: default;
   opacity: 0.6;
   box-shadow: none;
-}
-
-/* Secondary action — the quiet, dashed "new" slot, echoing the rail's
-   "+ New workspace" affordance. Only shown once a repo is known. */
-.aurora-empty-secondary {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 14px;
-  border-radius: 8px;
-  border: 1px dashed var(--line);
-  background: transparent;
-  color: var(--dim);
-  font-family: var(--sans);
-  font-size: 12px;
-  transition:
-    color 0.14s ease,
-    background-color 0.14s ease,
-    border-color 0.14s ease,
-    box-shadow 0.14s ease;
-}
-.aurora-empty-secondary:hover,
-.aurora-empty-secondary:focus-visible {
-  color: var(--fg);
-  background: color-mix(in oklab, var(--ac) 6%, transparent);
-  border-color: color-mix(in oklab, var(--acd) 40%, var(--line));
-}
-.aurora-empty-secondary:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ac) 32%, transparent);
-}
-
-/* Reduced motion: the caret's blink keyframe ends at opacity 0, so the global
-   reduce rule (which snaps every animation to its end state) would hide it.
-   Pin it visible and still instead. */
-@media (prefers-reduced-motion: reduce) {
-  .aurora-empty__caret {
-    animation: none;
-    opacity: 1;
-  }
 }
 
 /* Status bar keyboard-hint group. display:flex is set here (not inline) so the

@@ -34,6 +34,10 @@ export function statusLine(w: Workspace): { text: string; color: string } {
 
 export interface PersistedWs {
   id: string;
+  /** Optional at read time: legacy records predate this field and are treated
+   *  as "workspace" by `rehydrate`. Always written for records saved by this
+   *  version of the app (see `savePersisted`). */
+  kind?: "home" | "workspace";
   repoId: string | null;
   title: string;
   issueKey: string | null;
@@ -71,6 +75,7 @@ export function savePersisted(workspaces: Workspace[], activeWs: string | null):
   try {
     const ws: PersistedWs[] = workspaces.map((w) => ({
       id: w.id,
+      kind: w.kind,
       repoId: w.repoId,
       title: w.title,
       issueKey: w.issueKey,

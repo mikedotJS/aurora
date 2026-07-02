@@ -177,6 +177,12 @@ export interface WsMr {
 
 export interface Workspace {
   id: string;
+  /** "home" = the permanent, singleton Home terminal (repoId: null, rooted at
+   *  the user's home dir); "workspace" = every ordinary repo/manual lane.
+   *  Home reuses this same shape so the pane/PTY/tab engine needs no fork —
+   *  the "not a workspace / not a repo" rule is enforced at the UI (rail
+   *  grouping) and eligibility (delete/adopt guard) layers, not here. */
+  kind: "home" | "workspace";
   repoId: string | null;
   title: string;
   issueKey: string | null;
@@ -242,6 +248,8 @@ export interface CreateWorkspaceOpts {
   jiraUrl?: string | null;
   jiraSync?: boolean;
   env?: Record<string, string>;
+  /** Defaults to "workspace"; only the singleton Home terminal passes "home". */
+  kind?: "home" | "workspace";
 }
 
 export interface StoreState {
@@ -478,6 +486,7 @@ function newWorkspace(opts: CreateWorkspaceOpts & { id?: string }): Workspace {
   }
   return {
     id: opts.id ?? `w${wsSeq++}-${NONCE}`,
+    kind: opts.kind ?? "workspace",
     repoId: opts.repoId,
     title: opts.title,
     issueKey: opts.issueKey ?? null,
@@ -504,6 +513,7 @@ function newWorkspace(opts: CreateWorkspaceOpts & { id?: string }): Workspace {
 function rehydrate(p: PersistedWs): Workspace {
   return {
     id: p.id,
+    kind: p.kind ?? "workspace",
     repoId: p.repoId,
     title: p.title,
     issueKey: p.issueKey,
@@ -641,15 +651,36 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const workspaces: Workspace[] = boot.restored.map(rehydrate);
 
+    // Always ensure the permanent Home terminal exists. Match on `kind`, never
+    // on id/dir, so a restored Home is reused (not duplicated) even across a
+    // rename of `home`. Unshifted so it sits first; rail ordering is driven by
+    // the rail's own pinning, so array order isn't load-bearing for the UI.
+    let homeWs = workspaces.find((w) => w.kind === "home");
+    if (!homeWs) {
+      homeWs = newWorkspace({
+        kind: "home",
+        repoId: null,
+        title: "Home",
+        dir: home,
+        branch: null,
+        baseBranch: "",
+      });
+      workspaces.unshift(homeWs);
+    }
+
     // The boot workspace only exists for a real repo checkout (boot.repo set) —
     // a repo launch is a real context worth opening. Reuse a restored workspace
     // already rooted at that repo, else create one. When there is no repo
-    // context, NO lane is synthesized (no manual/home fallback) — an empty boot
-    // (0 repo context, 0 restored) legitimately settles on zero workspaces.
+    // context, no repo lane is synthesized — the Home terminal (ensured above)
+    // is the floor, never a blank boot.
     let bootWs: Workspace | undefined;
     if (boot.repo) {
       const bootDir = boot.repo.root;
-      bootWs = workspaces.find((w) => w.dir === bootDir);
+      // Exclude kind:"home": if Aurora boots from inside a git-tracked ~ (a
+      // dotfiles repo), bootDir === homeWs.dir and an unqualified `dir` match
+      // would return Home itself — stealing it as the "boot lane" and leaving
+      // no real repo lane behind (a phantom empty repo group in the rail).
+      bootWs = workspaces.find((w) => w.kind !== "home" && w.dir === bootDir);
       if (!bootWs) {
         bootWs = newWorkspace({
           repoId: boot.repo.root,
@@ -670,15 +701,16 @@ export const useStore = create<StoreState>((set, get) => ({
       : persisted;
     const repos = deriveRepos(workspaces, extra);
 
-    // activeWs: a valid restored/boot activeWs wins, else the boot lane, else the
-    // first restored workspace (restored, no repo launch, stale activeWs), else
-    // null — 0 repo context + 0 restored is the empty state.
-    const activeWs: string | null =
+    // activeWs: a valid restored/boot activeWs wins, else the repo boot lane
+    // (a repo launch takes focus over Home), else the Home terminal — the
+    // empty-state (`activeWs = null`) outcome no longer exists; Home is always
+    // the floor.
+    const activeWs: string =
       boot.activeWs && workspaces.some((w) => w.id === boot.activeWs)
         ? boot.activeWs
-        : (bootWs?.id ?? workspaces[0]?.id ?? null);
-    // Mount only the active workspace at boot; others spawn on first activation.
-    // (activeWs === null → every workspace, if any, stays unmounted.)
+        : (bootWs?.id ?? homeWs.id);
+    // Mount only the active workspace at boot; others (including Home, when a
+    // repo boot wins focus) spawn on first activation.
     for (const w of workspaces) w.mounted = w.id === activeWs;
 
     set({ home, settings, apiKeyPresent, repos, workspaces, activeWs, initialized: true });
@@ -704,7 +736,10 @@ export const useStore = create<StoreState>((set, get) => ({
   adoptRepo: (wsId, repo) =>
     set((s) => {
       const ws = s.workspaces.find((w) => w.id === wsId);
-      if (!ws || ws.repoId) return {}; // only a manual lane, and only once
+      // Only a manual lane, and only once; the Home terminal must never be
+      // convertible into a repo workspace (it can `cd` into a repo like any
+      // shell, but that must not adopt the repo the way a manual lane does).
+      if (!ws || ws.repoId || ws.kind === "home") return {};
       const repos = s.repos.some((r) => r.id === repo.root)
         ? s.repos
         : [...s.repos, { id: repo.root, root: repo.root, name: repo.name, defaultBranch: repo.defaultBranch }];
@@ -738,6 +773,8 @@ export const useStore = create<StoreState>((set, get) => ({
       if (s.workspaces.length <= 1) return {};
       const idx = s.workspaces.findIndex((w) => w.id === id);
       if (idx === -1) return {};
+      // The Home terminal is permanent — refuse before any other check.
+      if (s.workspaces[idx].kind === "home") return {};
       const workspaces = s.workspaces.filter((w) => w.id !== id);
       const activeWs =
         s.activeWs === id ? workspaces[Math.min(idx, workspaces.length - 1)].id : s.activeWs;

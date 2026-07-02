@@ -151,6 +151,36 @@ describe("guard: workspace not found", () => {
   });
 });
 
+// ── Guard: Home terminal (kind === "home") ───────────────────────────────────
+// The Home terminal is permanent. This guard must fire BEFORE the last-workspace
+// guard and before any worktree/PTY teardown step — verified here even with
+// other workspaces present (so it's not just riding the "last workspace" guard).
+
+describe("guard: Home terminal", () => {
+  it("refuses with an error message matching /home/i, even with other workspaces present", async () => {
+    seed(ws("home", { kind: "home", repoId: null, dir: "/Users/tester" }), ws("ws-b"));
+    const r = await deleteWorkspace("home");
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; error: string }).error).toMatch(/home/i);
+  });
+
+  it("makes zero side-effect calls (no PTY kill, no worktree check, no removeWorkspace)", async () => {
+    seed(ws("home", { kind: "home", repoId: null, dir: "/Users/tester" }), ws("ws-b"));
+    await deleteWorkspace("home");
+    expect(ptyKill.mock.calls.length).toBe(0);
+    expect(worktreeListFn.mock.calls.length).toBe(0);
+    expect(worktreeRemoveFn.mock.calls.length).toBe(0);
+    expect(removeWorkspaceFn.mock.calls.length).toBe(0);
+  });
+
+  it("refuses Home even when it is the only workspace (would otherwise also trip the last-workspace guard)", async () => {
+    seed(ws("home", { kind: "home", repoId: null, dir: "/Users/tester" }));
+    const r = await deleteWorkspace("home");
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; error: string }).error).toMatch(/home/i);
+  });
+});
+
 // ── Guard: last workspace ─────────────────────────────────────────────────────
 
 describe("guard: last workspace", () => {
