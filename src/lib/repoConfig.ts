@@ -8,6 +8,7 @@
 
 import { useStore } from "../state/store";
 import { type BranchNamingConfig, DEFAULT_BRANCH_NAMING } from "./branchNaming";
+import { type EnvFileSpec } from "./envFiles";
 
 export type PaneLayout = "1" | "2-split" | "2x2";
 
@@ -24,11 +25,18 @@ export interface Preset {
   baseOverride: string | null;
   /** "auto" = a distinct offset per workspace; a number = fixed. Exposed to panes as $AURORA_PORT_OFFSET. */
   portOffset: "auto" | number;
+  /**
+   * Per-workspace env files written into the fresh worktree on create — so a
+   * service that reads its port from a file (not a `$((… + AURORA_PORT_OFFSET))`
+   * command) still lands on the workspace's allocated port. Templates support
+   * ${port:BASE}, ${offset}, ${workspace}. See lib/envFiles.ts.
+   */
+  envFiles: EnvFileSpec[];
   jiraSync: boolean;
 }
 
 /** Bumped when the persisted shape changes; triggers a one-time migration. */
-export const CONFIG_VERSION = 6;
+export const CONFIG_VERSION = 7;
 
 export interface RepoConfig {
   /** Schema version of the persisted config (absent on pre-v2 data). */
@@ -82,6 +90,9 @@ export const REPO_CONFIG_KEY = "aurora.repoconfig";
 /**
  * One-time migration of a persisted config to the current CONFIG_VERSION.
  *
+ * v7 adds: `preset.envFiles` (per-workspace env files materialized on create),
+ * defaulted to `[]` for presets stored before the field existed.
+ *
  * v6 removes: `defaults.basePort` (the base-port knob, superseded by the
  * per-workspace `$AURORA_PORT_OFFSET` convention). All other fields —
  * including all user presets — are preserved losslessly.
@@ -109,6 +120,7 @@ export function migrate(cfg: RepoConfig): RepoConfig {
     env?: Record<string, string>;
     baseOverride?: string | null;
     portOffset?: "auto" | number;
+    envFiles?: EnvFileSpec[];
     jiraSync?: boolean;
   };
 
@@ -122,6 +134,7 @@ export function migrate(cfg: RepoConfig): RepoConfig {
       env: p.env ?? {},
       baseOverride: p.baseOverride ?? null,
       portOffset: p.portOffset ?? "auto",
+      envFiles: p.envFiles ?? [],
       jiraSync: p.jiraSync ?? false,
     }));
 

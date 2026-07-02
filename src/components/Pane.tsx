@@ -10,6 +10,7 @@ import { useStore, type PaneState, type Block } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 import { blockLines, collectMatches, findRangesInLine, highlightLine, lineText, type Match } from "../lib/find";
 import { runHook } from "../lib/scripts";
+import { paneRunning } from "../lib/running";
 
 const HL_MATCH = "color-mix(in oklab, var(--warn) 30%, transparent)";
 const HL_CURRENT = "color-mix(in oklab, var(--ac) 58%, transparent)";
@@ -113,8 +114,23 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
   const focusPane = useStore((s) => s.focusPane);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // sticky-running-server-tabs: read the two runtime-only maps by ptyId — a
+  // primitive/reference read per selector (a string, or an existing object
+  // reference from the map), never a freshly-built array/object — so this
+  // can't repeat the Zustand black-screen selector crash (see paneRunning,
+  // computed below as a plain function call, outside any selector).
+  const serverStatus = useStore((s) => (pane.ptyId ? s.serverStatus[pane.ptyId] : undefined));
+  const fgState = useStore((s) => (pane.ptyId ? s.foregroundState[pane.ptyId] : undefined));
+  const running = paneRunning(pane, serverStatus, fgState);
+
   const showKeyEntry = keyEntry && isActive;
-  const showPrompt = !pane.rawMode && !showKeyEntry;
+  // While a server holds the pane (running), the prompt line is simply hidden —
+  // the pane reads as attached, like a plain terminal with a foreground process.
+  const showPrompt = !pane.rawMode && !showKeyEntry && !running;
+  // Mirror of showPrompt's running clause: the busy-state banner replaces the
+  // prompt exactly when running would otherwise have suppressed it (never in
+  // rawMode — vim/top own the pane — and never while key-entry owns the pane).
+  const showRunning = !pane.rawMode && !showKeyEntry && running;
   const cwd = shortenCwd(pane.cwd, home);
 
   const border = multiple ? (isActive ? "var(--ac)" : "var(--line)") : "transparent";
@@ -246,6 +262,95 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
               needsKey={pane.suggestion.needsKey}
               footer
             />
+          )}
+
+          {showRunning && (
+            // Busy-state banner that stands in for the prompt: the pane can't
+            // take input, so it says what's running and — the whole point —
+            // makes Ctrl+C the visible way to get control back. Reuses Aurora's
+            // card grammar (tinted fill + left accent rule) but in the --warn
+            // running tone, not the --ac assistant tone.
+            <div
+              style={{
+                margin: "2px 0 10px",
+                maxWidth: 560,
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                border: "1px solid color-mix(in oklab, var(--warn) 30%, var(--line))",
+                borderLeft: "2px solid var(--warn)",
+                borderRadius: 8,
+                background: "color-mix(in oklab, var(--warn) 8%, transparent)",
+                padding: "9px 12px",
+                animation: "rise .13s ease",
+              }}
+            >
+              <span
+                style={{
+                  flex: "0 0 auto",
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: "var(--warn)",
+                  boxShadow: "0 0 7px var(--warn)",
+                  animation: "pulse 1.8s ease-in-out infinite",
+                }}
+              />
+              <div style={{ minWidth: 0, flex: 1, display: "flex", alignItems: "baseline", gap: 9, overflow: "hidden" }}>
+                <span
+                  style={{
+                    flex: "0 0 auto",
+                    fontFamily: "var(--sans)",
+                    fontSize: 11,
+                    letterSpacing: ".06em",
+                    textTransform: "uppercase",
+                    color: "var(--warn-d)",
+                  }}
+                >
+                  running
+                </span>
+                {pane.blocks[pane.blocks.length - 1]?.command?.trim() && (
+                  <span
+                    style={{
+                      minWidth: 0,
+                      color: "var(--fg)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {pane.blocks[pane.blocks.length - 1]!.command.trim()}
+                  </span>
+                )}
+              </div>
+              <span
+                style={{
+                  flex: "0 0 auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 7,
+                  fontFamily: "var(--sans)",
+                  fontSize: 11.5,
+                  color: "var(--dim)",
+                }}
+              >
+                <kbd
+                  style={{
+                    fontFamily: "var(--sans)",
+                    fontSize: 11,
+                    color: "var(--warn)",
+                    background: "color-mix(in oklab, var(--warn) 10%, transparent)",
+                    border: "1px solid color-mix(in oklab, var(--warn) 45%, var(--line))",
+                    borderRadius: 5,
+                    padding: "1px 6px",
+                    boxShadow: "inset 0 -1px 0 color-mix(in oklab, var(--warn) 30%, transparent)",
+                  }}
+                >
+                  ⌃C
+                </kbd>
+                to stop
+              </span>
+            </div>
           )}
 
           {showPrompt && (

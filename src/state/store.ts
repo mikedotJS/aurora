@@ -12,7 +12,7 @@ import { ghostFor } from "../lib/commands";
 import type { DirEntry } from "../lib/sys";
 import { savePersisted, loadRepos, saveRepos, type PersistedWs } from "../lib/workspace";
 import type { RepoConfig } from "../lib/repoConfig";
-import type { ServerStatus } from "../term/pty";
+import type { ServerStatus, ForegroundState } from "../term/pty";
 import {
   type Connections,
   type JiraConnection,
@@ -332,6 +332,14 @@ export interface StoreState {
   serverStatus: Record<string, ServerStatus>;
   setServerStatus: (ptyId: string, s: ServerStatus) => void;
   clearServerStatus: (ptyIds: string[]) => void;
+  /**
+   * Runtime-only per-pane foreground signal (sticky-running-server-tabs, tier 1),
+   * keyed by ptyId. Written by the generic running poll (`src/lib/running.ts`);
+   * never persisted. Cleared on pane close/respawn/exit alongside serverStatus.
+   */
+  foregroundState: Record<string, ForegroundState>;
+  setForegroundState: (ptyId: string, s: ForegroundState) => void;
+  clearForegroundState: (ptyIds: string[]) => void;
   // tabs (scoped to the active workspace)
   newTab: () => void;
   closeTab: (i: number) => void;
@@ -573,6 +581,20 @@ function patchPane(workspaces: Workspace[], paneId: number, patch: PanePatch): W
   });
 }
 
+/**
+ * Remove the given keys from a Record, returning a fresh object (or the same
+ * reference when there's nothing to remove). Used to prune `serverStatus` /
+ * `foregroundState` entries for ptyIds whose pane just closed/respawned/exited —
+ * both maps are runtime-only, so leaving stale entries behind is a (bounded but
+ * unnecessary) memory leak, not a correctness bug: ptyIds are never reused.
+ */
+function omitKeys<T>(map: Record<string, T>, keys: string[]): Record<string, T> {
+  if (!keys.length) return map;
+  const next = { ...map };
+  for (const k of keys) delete next[k];
+  return next;
+}
+
 /** Apply a tab-strip mutation to the active workspace, returning the new list. */
 function patchActiveWs(
   workspaces: Workspace[],
@@ -632,6 +654,8 @@ export const useStore = create<StoreState>((set, get) => ({
   muted: false,
   // Runtime-only — not persisted; restored workspaces start with no server status.
   serverStatus: {} as Record<string, ServerStatus>,
+  // Runtime-only — not persisted; restored workspaces start with no foreground state.
+  foregroundState: {} as Record<string, ForegroundState>,
 
   init: (home, settings, apiKeyPresent, boot) => {
     paneSeq = 1;
@@ -738,11 +762,20 @@ export const useStore = create<StoreState>((set, get) => ({
       if (s.workspaces.length <= 1) return {};
       const idx = s.workspaces.findIndex((w) => w.id === id);
       if (idx === -1) return {};
+      const removed = s.workspaces[idx];
+      const closedPtyIds = removed.tabs
+        .flatMap((g) => g.panes.map((p) => p.ptyId))
+        .filter((id): id is string => id !== null);
       const workspaces = s.workspaces.filter((w) => w.id !== id);
       const activeWs =
         s.activeWs === id ? workspaces[Math.min(idx, workspaces.length - 1)].id : s.activeWs;
       savePersisted(workspaces, activeWs);
-      return { workspaces, activeWs };
+      return {
+        workspaces,
+        activeWs,
+        serverStatus: omitKeys(s.serverStatus, closedPtyIds),
+        foregroundState: omitKeys(s.foregroundState, closedPtyIds),
+      };
     }),
 
   setWsDiff: (id, diff) =>
@@ -777,20 +810,37 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { ptyId: rt.ptyId, isZsh: rt.isZsh }) })),
 
   markExited: (paneId) =>
-    set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { exited: true, rawMode: false }) })),
+    set((s) => {
+      const pane = findPane(s, paneId);
+      const workspaces = patchPane(s.workspaces, paneId, { exited: true, rawMode: false });
+      // A dead shell has nothing running — drop its running-state entries
+      // (runtime-only maps; not persisted, see the Requirement note below).
+      if (!pane?.ptyId) return { workspaces };
+      return {
+        workspaces,
+        serverStatus: omitKeys(s.serverStatus, [pane.ptyId]),
+        foregroundState: omitKeys(s.foregroundState, [pane.ptyId]),
+      };
+    }),
 
   respawnPane: (paneId) =>
     set((s) => {
       const pane = findPane(s, paneId);
       if (!pane) return {};
+      const workspaces = patchPane(s.workspaces, paneId, {
+        ptyId: null,
+        ptyEpoch: pane.ptyEpoch + 1,
+        ready: false,
+        exited: false,
+        rawMode: false,
+      });
+      // The old ptyId is orphaned by the respawn (a fresh one is minted on the
+      // next spawn) — prune its running-state entries so they don't leak.
+      if (!pane.ptyId) return { workspaces };
       return {
-        workspaces: patchPane(s.workspaces, paneId, {
-          ptyId: null,
-          ptyEpoch: pane.ptyEpoch + 1,
-          ready: false,
-          exited: false,
-          rawMode: false,
-        }),
+        workspaces,
+        serverStatus: omitKeys(s.serverStatus, [pane.ptyId]),
+        foregroundState: omitKeys(s.foregroundState, [pane.ptyId]),
       };
     }),
 
@@ -839,13 +889,14 @@ export const useStore = create<StoreState>((set, get) => ({
       const ws = s.workspaces.find((w) => w.id === wsId);
       if (!ws || ws.serverTabId == null) return {};
 
-      // Collect ptyIds from the server tab so we can clear their serverStatus entries.
+      // Collect ptyIds from the server tab so we can clear their serverStatus/
+      // foregroundState entries.
       const tab = ws.tabs.find((g) => g.id === ws.serverTabId);
       const serverPtyIds = tab
         ? tab.panes.map((p) => p.ptyId).filter((id): id is string => id !== null)
         : [];
-      const serverStatus = { ...s.serverStatus };
-      for (const id of serverPtyIds) delete serverStatus[id];
+      const serverStatus = omitKeys(s.serverStatus, serverPtyIds);
+      const foregroundState = omitKeys(s.foregroundState, serverPtyIds);
 
       const tabIdx = ws.tabs.findIndex((g) => g.id === ws.serverTabId);
       if (tabIdx === -1) {
@@ -853,6 +904,7 @@ export const useStore = create<StoreState>((set, get) => ({
         return {
           workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, serverTabId: null } : w)),
           serverStatus,
+          foregroundState,
         };
       }
       // Last tab: replace with a fresh work tab rather than leaving an empty workspace.
@@ -865,6 +917,7 @@ export const useStore = create<StoreState>((set, get) => ({
             w.id === wsId ? { ...w, tabs: [freshGroup], active: 0, serverTabId: null } : w,
           ),
           serverStatus,
+          foregroundState,
         };
       }
       const tabs = ws.tabs.filter((_, i) => i !== tabIdx);
@@ -876,11 +929,22 @@ export const useStore = create<StoreState>((set, get) => ({
           w.id === wsId ? { ...w, tabs, active, serverTabId: null } : w,
         ),
         serverStatus,
+        foregroundState,
       };
     }),
 
   setServerStatus: (ptyId, status) =>
-    set((s) => ({ serverStatus: { ...s.serverStatus, [ptyId]: status } })),
+    set((s) => {
+      // No-op guard (code review #2): the ~1.5s poll (running.ts) calls this
+      // every tick for every live pane even when nothing changed. Without this,
+      // a new `serverStatus` map is allocated every tick -> a fresh reference ->
+      // every subscriber (TabStrip, each Pane) re-renders forever, regressing
+      // the "fewer re-renders" pass (73adf46). Comparing to the previous value
+      // and returning the SAME map reference when unchanged keeps Zustand's
+      // subscribers from re-firing.
+      if (s.serverStatus[ptyId] === status) return {};
+      return { serverStatus: { ...s.serverStatus, [ptyId]: status } };
+    }),
 
   clearServerStatus: (ptyIds) =>
     set((s) => {
@@ -888,6 +952,18 @@ export const useStore = create<StoreState>((set, get) => ({
       for (const id of ptyIds) delete serverStatus[id];
       return { serverStatus };
     }),
+
+  setForegroundState: (ptyId, state) =>
+    set((s) => {
+      // No-op guard (code review #2) — see setServerStatus above for why this
+      // matters: same reasoning, applied to the other map the poll writes
+      // every tick.
+      const prev = s.foregroundState[ptyId];
+      if (prev?.running === state.running && prev?.pgid === state.pgid) return {};
+      return { foregroundState: { ...s.foregroundState, [ptyId]: state } };
+    }),
+
+  clearForegroundState: (ptyIds) => set((s) => ({ foregroundState: omitKeys(s.foregroundState, ptyIds) })),
 
   newTab: () =>
     set((s) => ({
@@ -901,11 +977,17 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => {
       const w = activeWorkspace(s);
       if (!w || w.tabs.length <= 1) return {};
+      const closed = w.tabs[i];
       const tabs = w.tabs.filter((_, idx) => idx !== i);
       let active = w.active;
       if (i < active) active -= 1;
       else if (i === active) active = Math.min(active, tabs.length - 1);
-      return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })) };
+      const closedPtyIds = closed ? closed.panes.map((p) => p.ptyId).filter((id): id is string => id !== null) : [];
+      return {
+        workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })),
+        serverStatus: omitKeys(s.serverStatus, closedPtyIds),
+        foregroundState: omitKeys(s.foregroundState, closedPtyIds),
+      };
     }),
 
   selectTab: (i) =>
@@ -978,12 +1060,23 @@ export const useStore = create<StoreState>((set, get) => ({
         if (w.tabs.length <= 1) return {};
         const tabs = w.tabs.filter((_, i) => i !== w.active);
         const active = Math.min(w.active, tabs.length - 1);
-        return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })) };
+        const closedPtyIds = g.panes.map((p) => p.ptyId).filter((id): id is string => id !== null);
+        return {
+          workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })),
+          serverStatus: omitKeys(s.serverStatus, closedPtyIds),
+          foregroundState: omitKeys(s.foregroundState, closedPtyIds),
+        };
       }
+      const closedPtyId = g.panes[g.active]?.ptyId;
       const panes = g.panes.filter((_, i) => i !== g.active);
       const tabs = w.tabs.slice();
       tabs[w.active] = { ...g, panes, active: Math.min(g.active, panes.length - 1) };
-      return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs })) };
+      const closedPtyIds = closedPtyId ? [closedPtyId] : [];
+      return {
+        workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs })),
+        serverStatus: omitKeys(s.serverStatus, closedPtyIds),
+        foregroundState: omitKeys(s.foregroundState, closedPtyIds),
+      };
     }),
 
   focusPane: (i) =>

@@ -9,13 +9,22 @@
 //   D4 (revised): Stop reuses pty.kill (server pgid joined in Rust), keeps workspace
 //   D5: idempotent — stale tab killed+dropped before new one is created
 //   D7: capture fire-and-forget at launch via pty.captureServerPgid
-//   D8: front poll (~1.5 s) keeps serverStatus map current; stops when no server tabs
+//   D8: front poll (~1.5 s) keeps serverStatus map current; generalised to every live
+//       pane (not just server tabs) by sticky-running-server-tabs, see ./running.ts
 
 import { useStore, type Workspace } from "../state/store";
 import type { ServerStatus } from "../term/pty";
 import { pty } from "../term/pty";
 import { portScripts, serverUnits } from "./ports";
 import { scriptsForRoot, runServerScript } from "./scripts";
+import { ensurePtyPoll, stopPtyPoll } from "./running";
+
+// The D8 liveness poll used to live here, scoped to Servers-tab panes only.
+// sticky-running-server-tabs generalised it to every live pane (any workspace,
+// any tab) — it now lives in ./running as ensurePtyPoll/stopPtyPoll. Re-exported
+// under their original names so existing Run/Stop callers (and their tests)
+// don't need to change.
+export { ensurePtyPoll as ensureServerPoll, stopPtyPoll as stopPoll };
 
 /**
  * Pure selector: true when the workspace's dedicated server tab exists AND at least
@@ -49,88 +58,6 @@ export function serversUp(ws: Workspace, status?: Record<string, ServerStatus>):
         return pane.blocks[pane.blocks.length - 1]?.running === true;
     }
   });
-}
-
-// ── Liveness poll (D8) ─────────────────────────────────────────────────────────
-
-/** Module-level handle to the single active poll interval. */
-let _pollInterval: ReturnType<typeof setInterval> | null = null;
-/** Guard against overlapping ticks (async probe may outlast the 1.5 s interval). */
-let _pollRunning = false;
-
-/**
- * Ensure a single ~1.5 s liveness poll is running.
- * Idempotent: a second call while the interval is active is a no-op.
- *
- * Each tick: for every server pane across all workspaces that has a ptyId,
- * calls `pty.serverStatus(ptyId)` and writes the result into `store.serverStatus`.
- * Auto-stops (clearInterval) when no workspace has a `serverTabId`.
- */
-export function ensureServerPoll(): void {
-  if (_pollInterval !== null) return; // already running
-
-  _pollInterval = setInterval(async () => {
-    if (_pollRunning) return; // skip overlapping tick
-    _pollRunning = true;
-    try {
-      const st = useStore.getState();
-
-      // Collect server panes across all workspaces.
-      const serverPanes: Array<{ ptyId: string }> = [];
-      let hasAnyServerTab = false;
-      for (const ws of st.workspaces) {
-        if (ws.serverTabId == null) continue;
-        hasAnyServerTab = true;
-        const tab = ws.tabs.find((g) => g.id === ws.serverTabId);
-        if (!tab) continue;
-        for (const p of tab.panes) {
-          if (p.ptyId) serverPanes.push({ ptyId: p.ptyId });
-        }
-      }
-
-      if (!hasAnyServerTab) {
-        stopPoll();
-        return;
-      }
-
-      // Probe all server panes in parallel.
-      await Promise.all(
-        serverPanes.map(async ({ ptyId }) => {
-          try {
-            const s = await pty.serverStatus(ptyId);
-            // Guard: only write the status if the pane is still part of a live
-            // server tab. The async probe may outlast a concurrent stopServers/
-            // dropServerTab call, which would leave a stale entry in the map that
-            // is never cleaned up (the "slow serverStatus leak" finding).
-            const isStillLive = useStore.getState().workspaces.some((w) => {
-              if (w.serverTabId == null) return false;
-              const tab = w.tabs.find((g) => g.id === w.serverTabId);
-              return tab?.panes.some((p) => p.ptyId === ptyId) ?? false;
-            });
-            if (isStillLive) {
-              useStore.getState().setServerStatus(ptyId, s);
-            }
-          } catch {
-            // Probe failed (session likely gone) — ignore; kill/dropServerTab will clean up.
-          }
-        }),
-      );
-    } finally {
-      _pollRunning = false;
-    }
-  }, 1500);
-}
-
-/**
- * Stop the liveness poll. Called when no server tabs remain (eagerly in stopServers,
- * lazily on the next tick in the interval callback).
- * Safe to call multiple times.
- */
-export function stopPoll(): void {
-  if (_pollInterval !== null) {
-    clearInterval(_pollInterval);
-    _pollInterval = null;
-  }
 }
 
 // ── Orchestrator ───────────────────────────────────────────────────────────────
@@ -215,20 +142,19 @@ export async function runServers(wsId: string): Promise<void> {
           // fire-and-forget; failure is non-fatal (falls back to "uncaptured")
         });
         // D8: ensure the liveness poll is running.
-        ensureServerPoll();
+        ensurePtyPoll();
       },
     });
   }
   // Also ensure the poll is running at launch time (covers the case where
   // the panes are already ready and onLaunched fired synchronously above).
-  ensureServerPoll();
+  ensurePtyPoll();
 }
 
 /**
  * Kill the running servers and drop the dedicated server tab.
  * No-op when serverTabId is null (servers already down).
  * Does NOT touch the worktree or call removeWorkspace.
- * Eagerly stops the liveness poll when no server tabs remain.
  */
 export async function stopServers(wsId: string): Promise<void> {
   const st = useStore.getState();
@@ -239,16 +165,16 @@ export async function stopServers(wsId: string): Promise<void> {
   if (tab) {
     const ptyIds = tab.panes.map((p) => p.ptyId).filter((id): id is string => id !== null);
     await Promise.all(ptyIds.map((id) => pty.kill(id)));
-    // D9.7: clear serverStatus for stopped panes (also cleared by dropServerTab,
-    // but explicit here for clarity per the design doc).
+    // D9.7: clear serverStatus/foregroundState for stopped panes (also cleared
+    // by dropServerTab, but explicit here for clarity per the design doc).
     useStore.getState().clearServerStatus(ptyIds);
+    useStore.getState().clearForegroundState(ptyIds);
   }
 
   useStore.getState().dropServerTab(wsId);
 
-  // Eagerly stop the poll when no server tabs remain anywhere.
-  const hasAnyServerTab = useStore.getState().workspaces.some((w) => w.serverTabId != null);
-  if (!hasAnyServerTab) {
-    stopPoll();
-  }
+  // No eager poll-stop here (sticky-running-server-tabs): the poll is no
+  // longer scoped to server tabs — it covers every live pane in every
+  // workspace, so "no server tab left" no longer implies "nothing to poll".
+  // Its own tick auto-stops once no pane anywhere has a live ptyId.
 }

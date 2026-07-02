@@ -136,6 +136,22 @@ pub fn read_text_file(path: String, max_bytes: Option<usize>) -> Result<String, 
     Ok(String::from_utf8_lossy(&bytes[..end]).to_string())
 }
 
+/// Write `content` to `path`, creating any missing parent directories.
+///
+/// Used by the workspace-create flow to materialize per-workspace env files
+/// (e.g. `apps/api/.env.local`) so services that read their port from a file —
+/// rather than a `$((BASE + AURORA_PORT_OFFSET))` shell expression — pick up the
+/// workspace's allocated port with no change to their start command. Overwrites
+/// an existing file (workspace dirs are freshly-created worktrees).
+#[tauri::command]
+pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let target = expand_tilde(&path);
+    if let Some(parent) = std::path::Path::new(&target).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&target, content).map_err(|e| e.to_string())
+}
+
 /// Current git branch for a directory, or `None` when not a repo.
 ///
 /// Uses `git branch --show-current` (not `rev-parse HEAD`) so it also reports the

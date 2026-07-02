@@ -18,6 +18,7 @@ function makePreset(overrides: Partial<Preset> = {}): Preset {
     env: { API_KEY: "xyz", TOKEN: "abc" },
     baseOverride: "develop",
     portOffset: 15,
+    envFiles: [],
     jiraSync: true,
     ...overrides,
   };
@@ -158,6 +159,75 @@ describe("environment variables", () => {
     expect(screen.getAllByPlaceholderText("NAME")).toHaveLength(1);
     fireEvent.click(screen.getByText("+ add variable"));
     expect(screen.getAllByPlaceholderText("NAME")).toHaveLength(2);
+  });
+});
+
+describe("env files", () => {
+  it("pre-fills path + content from existing specs", () => {
+    const preset = makePreset({
+      env: {},
+      envFiles: [{ path: "apps/api/.env.local", content: "PORT=${port:3000}" }],
+    });
+    render(<PresetEditor root={ROOT} preset={preset} onClose={() => {}} />);
+    expect(screen.getByDisplayValue("apps/api/.env.local")).toBeTruthy();
+    expect(screen.getByDisplayValue("PORT=${port:3000}")).toBeTruthy();
+  });
+
+  it("adds an empty env-file row via '+ add env file'", () => {
+    const preset = makePreset({ env: {}, envFiles: [] });
+    render(<PresetEditor root={ROOT} preset={preset} onClose={() => {}} />);
+    expect(screen.queryByPlaceholderText("apps/api/.env.local")).toBeNull();
+    fireEvent.click(screen.getByText("+ add env file"));
+    expect(screen.getByPlaceholderText("apps/api/.env.local")).toBeTruthy();
+    expect(screen.getByPlaceholderText("PORT=${port:3000}")).toBeTruthy();
+  });
+
+  it("edits the path and the content template in place", () => {
+    const preset = makePreset({
+      env: {},
+      envFiles: [{ path: "apps/api/.env.local", content: "PORT=${port:3000}" }],
+    });
+    render(<PresetEditor root={ROOT} preset={preset} onClose={() => {}} />);
+    fireEvent.change(screen.getByDisplayValue("apps/api/.env.local"), {
+      target: { value: "apps/web/.env.local" },
+    });
+    fireEvent.change(screen.getByDisplayValue("PORT=${port:3000}"), {
+      target: { value: "WEB=${port:4200}" },
+    });
+    expect(screen.getByDisplayValue("apps/web/.env.local")).toBeTruthy();
+    expect(screen.getByDisplayValue("WEB=${port:4200}")).toBeTruthy();
+  });
+
+  it("removes a spec via its × button", () => {
+    const preset = makePreset({
+      env: {},
+      envFiles: [
+        { path: "apps/api/.env.local", content: "PORT=${port:3000}" },
+        { path: "apps/web/.env.local", content: "WEB=${port:4200}" },
+      ],
+    });
+    render(<PresetEditor root={ROOT} preset={preset} onClose={() => {}} />);
+    expect(screen.getAllByPlaceholderText("apps/api/.env.local")).toHaveLength(2);
+    fireEvent.click(screen.getAllByText("×")[0]); // env: {} → the only × buttons are env-file rows
+    expect(screen.getAllByPlaceholderText("apps/api/.env.local")).toHaveLength(1);
+    expect(screen.getByDisplayValue("apps/web/.env.local")).toBeTruthy();
+    expect(screen.queryByDisplayValue("apps/api/.env.local")).toBeNull();
+  });
+
+  it("persists the edited env files on Save", () => {
+    const preset = makePreset({ id: "pf", env: {}, envFiles: [] });
+    seed(preset);
+    render(<PresetEditor root={ROOT} preset={preset} onClose={() => {}} />);
+    fireEvent.click(screen.getByText("+ add env file"));
+    fireEvent.change(screen.getByPlaceholderText("apps/api/.env.local"), {
+      target: { value: "apps/api/.env.local" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("PORT=${port:3000}"), {
+      target: { value: "PORT=${port:3000}" },
+    });
+    fireEvent.click(screen.getByText("Save preset"));
+    const saved = getRepoConfig(ROOT).presets.find((p) => p.id === "pf");
+    expect(saved?.envFiles).toEqual([{ path: "apps/api/.env.local", content: "PORT=${port:3000}" }]);
   });
 });
 

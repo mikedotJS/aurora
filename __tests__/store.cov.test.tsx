@@ -123,6 +123,7 @@ function resetStore(patch: Partial<StoreState> = {}) {
       unseen: 0,
       muted: false,
       serverStatus: {},
+      foregroundState: {},
       ...patch,
     },
     false,
@@ -288,6 +289,25 @@ describe("createWorkspace", () => {
     useStore.getState().createWorkspace({ repoId: null, title: "t", dir: "/x", branch: null });
     expect(localStorage.getItem("aurora.workspaces")).not.toBeNull();
   });
+
+  it("never persists foregroundState/serverStatus, even when both are populated at save time (sticky-running-server-tabs: runtime-only state must not leak into PersistedWs)", () => {
+    // Populate both runtime-only maps with a recognizable ptyId BEFORE the save
+    // triggered by createWorkspace below — if a future refactor ever threaded
+    // these maps into the persisted workspace shape (e.g. by adding a
+    // foregroundState/serverStatus field to Workspace and mapping it in
+    // savePersisted), this is the test that would catch it.
+    useStore.getState().setForegroundState("pty-leak-check", { running: true, pgid: 4242 });
+    useStore.getState().setServerStatus("pty-leak-check", "alive");
+    useStore.getState().createWorkspace({ repoId: null, title: "t", dir: "/x", branch: null });
+
+    expect(useStore.getState().foregroundState["pty-leak-check"]).toEqual({ running: true, pgid: 4242 });
+    expect(useStore.getState().serverStatus["pty-leak-check"]).toBe("alive");
+
+    const raw = localStorage.getItem("aurora.workspaces")!;
+    expect(raw).not.toContain("foregroundState");
+    expect(raw).not.toContain("serverStatus");
+    expect(raw).not.toContain("pty-leak-check");
+  });
 });
 
 describe("adoptRepo", () => {
@@ -398,6 +418,21 @@ describe("removeWorkspace", () => {
     const s = useStore.getState();
     expect(s.workspaces.map((w) => w.id)).toEqual(["w1", "w3"]);
     expect(s.activeWs).toBe("w3"); // idx=1 clamped to length-1=1 -> w3
+  });
+
+  it("prunes serverStatus/foregroundState for every ptyId owned by the removed workspace (sticky-running-server-tabs)", () => {
+    const p1 = mkPane({ ptyId: "pty-w2-a" });
+    const p2 = mkPane({ ptyId: "pty-w2-b" });
+    resetStore({
+      workspaces: [mkWs({ id: "w1" }), mkWs({ id: "w2", tabs: [mkGroup([p1, p2])] })],
+      activeWs: "w1",
+      serverStatus: { "pty-w2-a": "alive", "pty-w2-b": "dead", "pty-elsewhere": "alive" },
+      foregroundState: { "pty-w2-a": { running: true, pgid: 1 }, "pty-elsewhere": { running: true, pgid: 2 } },
+    });
+    useStore.getState().removeWorkspace("w2");
+    const s = useStore.getState();
+    expect(s.serverStatus).toEqual({ "pty-elsewhere": "alive" });
+    expect(s.foregroundState).toEqual({ "pty-elsewhere": { running: true, pgid: 2 } });
   });
 });
 
@@ -523,6 +558,31 @@ describe("pane runtime", () => {
     expect(pane.rawMode).toBe(false);
   });
 
+  it("markExited prunes the pane's serverStatus/foregroundState entries", () => {
+    const p1 = mkPane({ ptyId: "pty-1" });
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([p1])] })],
+      activeWs: "w1",
+      serverStatus: { "pty-1": "alive" },
+      foregroundState: { "pty-1": { running: true, pgid: 1 } },
+    });
+    useStore.getState().markExited(p1.id);
+    const s = useStore.getState();
+    expect(s.serverStatus).toEqual({});
+    expect(s.foregroundState).toEqual({});
+  });
+
+  it("markExited on a pane with no ptyId leaves the running-state maps untouched", () => {
+    const p1 = mkPane();
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([p1])] })],
+      activeWs: "w1",
+      serverStatus: { elsewhere: "alive" },
+    });
+    useStore.getState().markExited(p1.id);
+    expect(useStore.getState().serverStatus).toEqual({ elsewhere: "alive" });
+  });
+
   it("respawnPane is a no-op for an unknown pane id", () => {
     resetStore({ workspaces: [mkWs({ id: "w1" })], activeWs: "w1" });
     const before = useStore.getState().workspaces;
@@ -540,6 +600,20 @@ describe("pane runtime", () => {
     expect(pane.ready).toBe(false);
     expect(pane.exited).toBe(false);
     expect(pane.rawMode).toBe(false);
+  });
+
+  it("respawnPane prunes the OLD ptyId's serverStatus/foregroundState entries", () => {
+    const p1 = mkPane({ ptyId: "old" });
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([p1])] })],
+      activeWs: "w1",
+      serverStatus: { old: "alive", elsewhere: "alive" },
+      foregroundState: { old: { running: true, pgid: 1 } },
+    });
+    useStore.getState().respawnPane(p1.id);
+    const s = useStore.getState();
+    expect(s.serverStatus).toEqual({ elsewhere: "alive" });
+    expect(s.foregroundState).toEqual({});
   });
 
   it("setPaneView switches terminal <-> changes", () => {
@@ -620,8 +694,13 @@ describe("dropServerTab", () => {
     expect(useStore.getState().workspaces).toBe(before);
   });
 
-  it("removes the server tab, clears serverStatus for its ptyIds, fixes active index (tabIdx === active)", () => {
-    resetStore({ workspaces: [mkWs({ id: "w1" })], activeWs: "w1", serverStatus: { "pty-srv": "alive" } });
+  it("removes the server tab, clears serverStatus/foregroundState for its ptyIds, fixes active index (tabIdx === active)", () => {
+    resetStore({
+      workspaces: [mkWs({ id: "w1" })],
+      activeWs: "w1",
+      serverStatus: { "pty-srv": "alive" },
+      foregroundState: { "pty-srv": { running: true, pgid: 1 } },
+    });
     useStore.getState().prepareServerTab("w1", 1);
     let ws = useStore.getState().workspaces[0];
     const serverTabId = ws.serverTabId!;
@@ -638,6 +717,7 @@ describe("dropServerTab", () => {
     expect(ws.serverTabId).toBeNull();
     expect(ws.tabs.some((g) => g.id === serverTabId)).toBe(false);
     expect(useStore.getState().serverStatus["pty-srv"]).toBeUndefined();
+    expect(useStore.getState().foregroundState["pty-srv"]).toBeUndefined();
   });
 
   it("tabIdx < active: active shifts down by one", () => {
@@ -686,6 +766,66 @@ describe("setServerStatus / clearServerStatus", () => {
     useStore.getState().clearServerStatus(["p1"]);
     expect(useStore.getState().serverStatus).toEqual({ p2: "dead" });
   });
+
+  // Code-review regression (#2, MAJEUR perf): the ~1.5s poll (running.ts)
+  // calls setServerStatus for every live pane on every tick, even when the
+  // status hasn't changed. Without a no-op guard, that allocates a fresh
+  // `serverStatus` map every tick -> a new reference -> every subscriber
+  // (TabStrip, each Pane) re-renders forever. Locks the fix: writing the SAME
+  // value must return the SAME map reference.
+  it("writing the SAME status is a no-op — same map reference (regression: was a fresh map every poll tick)", () => {
+    resetStore({ serverStatus: { p1: "alive" } });
+    const before = useStore.getState().serverStatus;
+    useStore.getState().setServerStatus("p1", "alive");
+    expect(useStore.getState().serverStatus).toBe(before);
+  });
+
+  it("writing a DIFFERENT status still allocates a new map (the guard doesn't over-suppress real changes)", () => {
+    resetStore({ serverStatus: { p1: "alive" } });
+    const before = useStore.getState().serverStatus;
+    useStore.getState().setServerStatus("p1", "dead");
+    expect(useStore.getState().serverStatus).not.toBe(before);
+    expect(useStore.getState().serverStatus.p1).toBe("dead");
+  });
+});
+
+describe("setForegroundState / clearForegroundState", () => {
+  it("setForegroundState sets a single entry", () => {
+    useStore.getState().setForegroundState("p1", { running: true, pgid: 555 });
+    expect(useStore.getState().foregroundState.p1).toEqual({ running: true, pgid: 555 });
+  });
+
+  it("clearForegroundState removes only the given ids", () => {
+    resetStore({
+      foregroundState: { p1: { running: true, pgid: 1 }, p2: { running: false, pgid: null } },
+    });
+    useStore.getState().clearForegroundState(["p1"]);
+    expect(useStore.getState().foregroundState).toEqual({ p2: { running: false, pgid: null } });
+  });
+
+  it("clearForegroundState with an empty list is a no-op (same reference)", () => {
+    resetStore({ foregroundState: { p1: { running: true, pgid: 1 } } });
+    const before = useStore.getState().foregroundState;
+    useStore.getState().clearForegroundState([]);
+    expect(useStore.getState().foregroundState).toBe(before);
+  });
+
+  // Code-review regression (#2, MAJEUR perf) — same reasoning as setServerStatus
+  // above, for the other map the poll writes every ~1.5s tick.
+  it("writing an EQUAL {running, pgid} is a no-op — same map reference (regression: was a fresh map every poll tick)", () => {
+    resetStore({ foregroundState: { p1: { running: true, pgid: 555 } } });
+    const before = useStore.getState().foregroundState;
+    useStore.getState().setForegroundState("p1", { running: true, pgid: 555 });
+    expect(useStore.getState().foregroundState).toBe(before);
+  });
+
+  it("writing a DIFFERENT pgid (even with the same `running`) still allocates a new map", () => {
+    resetStore({ foregroundState: { p1: { running: true, pgid: 555 } } });
+    const before = useStore.getState().foregroundState;
+    useStore.getState().setForegroundState("p1", { running: true, pgid: 999 });
+    expect(useStore.getState().foregroundState).not.toBe(before);
+    expect(useStore.getState().foregroundState.p1).toEqual({ running: true, pgid: 999 });
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -728,6 +868,21 @@ describe("tabs", () => {
     const ws = useStore.getState().workspaces[0];
     expect(ws.tabs).toHaveLength(1);
     expect(ws.active).toBe(0);
+  });
+
+  it("closeTab: prunes serverStatus/foregroundState for every ptyId in the closed tab", () => {
+    const p1 = mkPane({ ptyId: "pty-a" });
+    const p2 = mkPane({ ptyId: "pty-b" });
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([p1, p2]), mkGroup([mkPane({ ptyId: "pty-other" })])], active: 1 })],
+      activeWs: "w1",
+      serverStatus: { "pty-a": "alive", "pty-b": "dead", "pty-other": "alive" },
+      foregroundState: { "pty-a": { running: true, pgid: 1 } },
+    });
+    useStore.getState().closeTab(0);
+    const s = useStore.getState();
+    expect(s.serverStatus).toEqual({ "pty-other": "alive" });
+    expect(s.foregroundState).toEqual({});
   });
 
   it("selectTab: no-op with no active workspace or out-of-range index", () => {
@@ -878,6 +1033,32 @@ describe("panes", () => {
     const g = useStore.getState().workspaces[0].tabs[0];
     expect(g.panes).toHaveLength(1);
     expect(g.active).toBe(0);
+  });
+
+  it("closePane: prunes serverStatus/foregroundState for the closed pane's ptyId", () => {
+    const stay = mkPane({ ptyId: "pty-stay" });
+    const closed = mkPane({ ptyId: "pty-closed" });
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([stay, closed], { active: 1 })] })],
+      activeWs: "w1",
+      serverStatus: { "pty-stay": "alive", "pty-closed": "alive" },
+      foregroundState: { "pty-closed": { running: true, pgid: 9 } },
+    });
+    useStore.getState().closePane();
+    const s = useStore.getState();
+    expect(s.serverStatus).toEqual({ "pty-stay": "alive" });
+    expect(s.foregroundState).toEqual({});
+  });
+
+  it("closePane: closing the last pane of a tab prunes that tab's ptyId too", () => {
+    const closed = mkPane({ ptyId: "pty-a" });
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([closed]), mkGroup([mkPane({ ptyId: "pty-other" })])], active: 0 })],
+      activeWs: "w1",
+      serverStatus: { "pty-a": "alive", "pty-other": "alive" },
+    });
+    useStore.getState().closePane();
+    expect(useStore.getState().serverStatus).toEqual({ "pty-other": "alive" });
   });
 
   it("focusPane: no-op with no active workspace or out-of-range index", () => {

@@ -24,6 +24,7 @@ function freshPreset(): Preset {
     env: {},
     baseOverride: null,
     portOffset: "auto",
+    envFiles: [],
     jiraSync: false,
   };
 }
@@ -70,6 +71,7 @@ export function presetCreateFields(preset: Preset) {
     baseOverride: preset.baseOverride,
     env: preset.env,
     portOffset: preset.portOffset,
+    envFiles: preset.envFiles,
     jiraSync: preset.jiraSync,
   };
 }

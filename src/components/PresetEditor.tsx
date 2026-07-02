@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { updatePreset, deletePreset } from "../lib/presets";
 import { type Preset, type PaneLayout } from "../lib/repoConfig";
+import { type EnvFileSpec } from "../lib/envFiles";
 import { scriptsForRoot } from "../lib/scripts";
 import { gitBranches } from "../lib/sys";
 
@@ -41,6 +42,34 @@ const textInput = {
   fontFamily: "var(--mono)",
   fontSize: 12.5,
   padding: 0,
+};
+// A monospace "surface" input for multi-line env-file templates — the box look
+// applied directly to a textarea (border-box so width:100% + padding fits).
+const codeArea = {
+  width: "100%",
+  boxSizing: "border-box" as const,
+  background: "var(--page)",
+  border: "1px solid var(--line)",
+  borderRadius: 7,
+  outline: "none",
+  color: "var(--fg)",
+  fontFamily: "var(--mono)",
+  fontSize: 12,
+  lineHeight: 1.5,
+  padding: "7px 10px",
+  resize: "vertical" as const,
+  minHeight: 44,
+};
+// Template-token chip for the env-files legend — teaches the substitution
+// vocabulary inline, so the feature is self-documenting.
+const tokenChip = {
+  fontFamily: "var(--mono)",
+  fontSize: 10.5,
+  color: "var(--dim)",
+  background: "var(--page)",
+  border: "1px solid var(--line)",
+  borderRadius: 5,
+  padding: "2px 6px",
 };
 
 function Pills<T extends string>({ options, value, onChange }: { options: { key: T; label: string }[]; value: T; onChange: (v: T) => void }) {
@@ -101,6 +130,14 @@ export function PresetEditor({ root, preset, onClose }: { root: string; preset: 
   const issueTypesText = draft.issueTypes.join(", ");
   const envRows = Object.entries(draft.env);
   const portAuto = draft.portOffset === "auto";
+  // Tolerate a preset built before the field existed (undefined) — migration
+  // fills it, but never let the editor crash on a stray fixture.
+  const envFiles = draft.envFiles ?? [];
+
+  const updateEnvFile = (i: number, p: Partial<EnvFileSpec>) =>
+    set("envFiles", envFiles.map((f, fi) => (fi === i ? { ...f, ...p } : f)));
+  const removeEnvFile = (i: number) => set("envFiles", envFiles.filter((_, fi) => fi !== i));
+  const addEnvFile = () => set("envFiles", [...envFiles, { path: "", content: "" }]);
 
   const save = () => {
     updatePreset(root, draft.id, draft);
@@ -224,6 +261,57 @@ export function PresetEditor({ root, preset, onClose }: { root: string; preset: 
               style={{ fontFamily: "var(--sans)", fontSize: 11.5, color: "var(--acd)", cursor: "pointer" }}
             >
               + add variable
+            </span>
+          </div>
+        </div>
+
+        <div>
+          <div style={fieldLabel}>Env files · written into each new workspace</div>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <span style={{ fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>Templates expand</span>
+            <code style={tokenChip}>{"${port:3000}"} → 3010</code>
+            <code style={tokenChip}>{"${offset}"}</code>
+            <code style={tokenChip}>{"${workspace}"}</code>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {envFiles.map((f, i) => (
+              <div
+                key={i}
+                style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}
+              >
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <div style={{ ...box, flex: 1 }}>
+                    <span style={{ color: "var(--faint)", fontFamily: "var(--mono)", fontSize: 12 }}>›</span>
+                    <input
+                      value={f.path}
+                      onChange={(e) => updateEnvFile(i, { path: e.target.value })}
+                      placeholder="apps/api/.env.local"
+                      spellCheck={false}
+                      style={textInput}
+                    />
+                  </div>
+                  <span
+                    onClick={() => removeEnvFile(i)}
+                    style={{ display: "flex", alignItems: "center", color: "var(--faint)", cursor: "pointer", padding: "0 4px" }}
+                  >
+                    ×
+                  </span>
+                </div>
+                <textarea
+                  value={f.content}
+                  onChange={(e) => updateEnvFile(i, { content: e.target.value })}
+                  placeholder={"PORT=${port:3000}"}
+                  spellCheck={false}
+                  rows={2}
+                  style={codeArea}
+                />
+              </div>
+            ))}
+            <span
+              onClick={addEnvFile}
+              style={{ fontFamily: "var(--sans)", fontSize: 11.5, color: "var(--acd)", cursor: "pointer" }}
+            >
+              + add env file
             </span>
           </div>
         </div>

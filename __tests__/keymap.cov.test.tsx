@@ -8,10 +8,11 @@
  * REAL Zustand store (a fresh workspace/pane per test via createWorkspace) so
  * assertions reflect real reducer behavior, not a re-implementation of it.
  */
-import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
 import { tauri } from "../test/mocks/tauri";
 import { useStore, activeGroup, activeWorkspace, findPane, DEFAULT_SETTINGS, type PaneState } from "../src/state/store";
 import { handleKeyDown } from "../src/lib/keymap";
+import { stopPtyPoll } from "../src/lib/running";
 import type { Suggestion } from "../src/ai/suggest";
 
 // ── Clipboard control (readText/writeText aren't routed through invoke(), so we
@@ -74,6 +75,13 @@ beforeEach(() => {
     keyError: null,
     apiKeyPresent: false,
     railCollapsed: false,
+    // Runtime-only maps feeding Ctrl+C routing (sticky-running-server-tabs) —
+    // reset so one test's foregroundState/serverStatus can't leak into the next
+    // (ptyId "pty-1" is reused across many tests via withPty()'s default).
+    foregroundState: {},
+    serverStatus: {},
+    notifs: [],
+    notifLog: [],
     // The one-time intro dialog guard (top of handleKeyDown) swallows every key
     // while unseen; these suites cover pre-existing keymap behavior, not the
     // intro itself, so seed it dismissed. (Intro-specific keymap coverage is a
@@ -87,6 +95,11 @@ beforeEach(() => {
 // that never calls tauri.reset() after this one can't inherit our last closures.
 afterAll(() => {
   tauri.reset();
+  // runInShell (Enter, via submit()) fires ensurePtyPoll() on every real
+  // command submit (sticky-running-server-tabs) — a real setInterval(…,1500).
+  // Without this the process never goes idle and `bun test` hangs (the exact
+  // failure mode fixed in e2464eb for unrelated per-file mock.module leaks).
+  stopPtyPoll();
 });
 
 // ── Form-field guard ─────────────────────────────────────────────────────────
@@ -446,6 +459,79 @@ describe("handleKeyDown — ⌃ control codes", () => {
     withPty(id);
     handleKeyDown(keyEvt("1", { ctrlKey: true }));
     expect(tauri.lastCall("pty_write")).toBeUndefined();
+  });
+
+  it("⌃C without a live pty is a no-op (early return, no crash)", () => {
+    mkPane();
+    expect(() => handleKeyDown(keyEvt("c", { ctrlKey: true }))).not.toThrow();
+    expect(tauri.lastCall("pty_write")).toBeUndefined();
+  });
+});
+
+// ── ⌃C routing (sticky-running-server-tabs) ──────────────────────────────────
+
+describe("handleKeyDown — ⌃C routing by what's actually running", () => {
+  it("foreground child running (fg.running) -> plain \\x03, even though status says 'dead'", () => {
+    const id = mkPane();
+    withPty(id);
+    useStore.setState({
+      foregroundState: { "pty-1": { running: true, pgid: 4242 } },
+      serverStatus: { "pty-1": "dead" },
+    });
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    expect(tauri.lastCall("pty_write")?.args).toEqual({ id: "pty-1", data: "\x03" });
+    expect(tauri.calls().some((c) => c.cmd === "pty_signal_server")).toBe(false);
+  });
+
+  it("not running at all -> plain \\x03 (unchanged idle-shell behavior)", () => {
+    const id = mkPane();
+    withPty(id);
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    expect(tauri.lastCall("pty_write")?.args).toEqual({ id: "pty-1", data: "\x03" });
+    expect(tauri.calls().some((c) => c.cmd === "pty_signal_server")).toBe(false);
+  });
+
+  it("detached-but-captured (alive, fg not running) -> signalServer(SIGINT), no \\x03", () => {
+    const id = mkPane();
+    withPty(id);
+    tauri.invoke({ pty_signal_server: () => true });
+    useStore.setState({
+      foregroundState: { "pty-1": { running: false, pgid: 1 } },
+      serverStatus: { "pty-1": "alive" },
+    });
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    expect(tauri.calls().some((c) => c.cmd === "pty_write")).toBe(false);
+    expect(tauri.lastCall("pty_signal_server")?.args).toEqual({ id: "pty-1", signal: 2 });
+  });
+
+  it("detached-but-captured via the OSC-133 block flag (tier 3) also routes to signalServer", () => {
+    const id = mkPane();
+    withPty(id);
+    tauri.invoke({ pty_signal_server: () => true });
+    useStore.getState().startBlock(id, "nx serve", "/x"); // last block running: true
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    expect(tauri.lastCall("pty_signal_server")?.args).toEqual({ id: "pty-1", signal: 2 });
+  });
+
+  it("signalServer resolves false (uncaptured/dead) -> honest notice, never a false 'stopped'", async () => {
+    const id = mkPane();
+    withPty(id);
+    tauri.invoke({ pty_signal_server: () => false });
+    useStore.setState({ serverStatus: { "pty-1": "alive" } });
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    await flush();
+    const notif = useStore.getState().notifLog[0];
+    expect(notif?.headline).toBe("Couldn't reach the process");
+  });
+
+  it("signalServer resolving true does not surface any notice", async () => {
+    const id = mkPane();
+    withPty(id);
+    tauri.invoke({ pty_signal_server: () => true });
+    useStore.setState({ serverStatus: { "pty-1": "alive" } });
+    handleKeyDown(keyEvt("c", { ctrlKey: true }));
+    await flush();
+    expect(useStore.getState().notifLog).toEqual([]);
   });
 });
 
@@ -1046,6 +1132,106 @@ describe("runInShell", () => {
     expect(b.exitCode).toBe(1);
     expect(b.output).toContain("lost its shell");
     expect(pane(id).ptyEpoch).toBe(epochBefore + 1);
+  });
+});
+
+// ── runInShell: capture-on-every-command + poll-ensure (sticky-running-server-tabs) ──
+// Generalisation this feature adds to the Enter path: EVERY typed command (not
+// just the dedicated "Run servers" flow, already covered in servers.cov.test.tsx)
+// fires a fire-and-forget captureServerPgid and ensures the generic liveness poll
+// is running — otherwise a typed `nx serve --no-tui` would never get its detached
+// pgid captured and would never badge/route Ctrl+C correctly.
+
+describe("runInShell — capture-on-every-command + poll-ensure", () => {
+  let capturedTick: (() => Promise<void>) | null;
+  let origSetInterval: typeof globalThis.setInterval;
+  let origClearInterval: typeof globalThis.clearInterval;
+
+  beforeEach(() => {
+    // Reset any real poll left running by earlier tests in this file (Enter
+    // fires ensurePtyPoll() unconditionally, and the interval is a module-level
+    // singleton shared across every test in this process).
+    stopPtyPoll();
+    capturedTick = null;
+    origSetInterval = globalThis.setInterval;
+    origClearInterval = globalThis.clearInterval;
+    (globalThis as unknown as { setInterval: unknown }).setInterval = ((cb: () => Promise<void>) => {
+      capturedTick = cb;
+      return 424242 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval;
+    (globalThis as unknown as { clearInterval: unknown }).clearInterval = (() => {}) as typeof clearInterval;
+  });
+
+  afterEach(() => {
+    globalThis.setInterval = origSetInterval;
+    globalThis.clearInterval = origClearInterval;
+    stopPtyPoll();
+  });
+
+  it("fires pty.captureServerPgid(ptyId) for an ORDINARY typed command, not just the Run-button flow", () => {
+    const id = mkPane();
+    withPty(id, "pty-cap-1");
+    useStore.getState().setInput(id, "nx serve my-app --no-tui");
+    handleKeyDown(keyEvt("Enter"));
+    expect(tauri.calls().some((c) => c.cmd === "pty_capture_server_pgid" && c.args.id === "pty-cap-1")).toBe(true);
+  });
+
+  // Code-review regression (#1, MAJEUR): resubmitting a command in a pane whose
+  // server capture is already confirmed alive must NOT re-trigger the capture
+  // round-trip — the Rust side no-ops this too (should_rearm), but this test
+  // would fail if the front-end guard regressed and unconditionally re-fired
+  // pty_capture_server_pgid, which is exactly the bug: on the real backend that
+  // call resets the session to Pending, clobbering a still-alive Found(pgid)
+  // and losing Ctrl+C's only kill target.
+  it("does NOT re-fire captureServerPgid when serverStatus is already 'alive' for this ptyId", () => {
+    const id = mkPane();
+    withPty(id, "pty-cap-alive");
+    useStore.setState({ serverStatus: { "pty-cap-alive": "alive" } });
+    useStore.getState().setInput(id, "echo again");
+    handleKeyDown(keyEvt("Enter"));
+    expect(tauri.calls().some((c) => c.cmd === "pty_capture_server_pgid")).toBe(false);
+  });
+
+  it("DOES re-fire captureServerPgid when serverStatus is anything other than 'alive' (dead/uncaptured/capturing/unset)", () => {
+    for (const status of ["dead", "uncaptured", "capturing", undefined] as const) {
+      tauri.reset();
+      const id = mkPane();
+      withPty(id, "pty-cap-notalive");
+      if (status) useStore.setState({ serverStatus: { "pty-cap-notalive": status } });
+      useStore.getState().setInput(id, "echo again");
+      handleKeyDown(keyEvt("Enter"));
+      expect(tauri.calls().some((c) => c.cmd === "pty_capture_server_pgid" && c.args.id === "pty-cap-notalive")).toBe(true);
+    }
+  });
+
+  it("ensures the generic liveness poll is running (setInterval fires) after a single ordinary command, so a later detach is still observed", () => {
+    const id = mkPane();
+    withPty(id, "pty-cap-2");
+    useStore.getState().setInput(id, "ls");
+    handleKeyDown(keyEvt("Enter"));
+    expect(capturedTick).not.toBeNull();
+  });
+
+  it("a captureServerPgid rejection from the typed-command path is swallowed (fire-and-forget) — the block still completes", async () => {
+    const id = mkPane();
+    withPty(id, "pty-cap-3");
+    tauri.invoke({
+      pty_capture_server_pgid: () => {
+        throw new Error("sampler boom");
+      },
+    });
+    useStore.getState().setInput(id, "ls");
+    expect(() => handleKeyDown(keyEvt("Enter"))).not.toThrow();
+    await flush();
+    expect(pane(id).blocks.at(-1)?.command).toBe("ls");
+  });
+
+  it("without a live pty, neither captureServerPgid nor the poll fire (nothing to capture)", () => {
+    const id = mkPane();
+    useStore.getState().setInput(id, "ls");
+    handleKeyDown(keyEvt("Enter"));
+    expect(tauri.calls().some((c) => c.cmd === "pty_capture_server_pgid")).toBe(false);
+    expect(capturedTick).toBeNull();
   });
 });
 

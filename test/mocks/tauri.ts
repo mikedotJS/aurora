@@ -63,6 +63,8 @@ const DEFAULTS: Record<string, InvokeHandler> = {
   pty_kill: () => undefined,
   pty_server_status: () => "unknown",
   pty_capture_server_pgid: () => undefined,
+  pty_foreground_state: () => ({ running: false, pgid: null }),
+  pty_signal_server: () => false,
 };
 
 let handlers: Record<string, InvokeHandler> = {};
