@@ -30,6 +30,7 @@ export const config: WebdriverIO.Config = {
       },
     ],
   ],
+  logLevel: "warn",
   framework: "mocha",
   mochaOpts: { ui: "bdd", timeout: 120_000 },
   reporters: ["spec"],
