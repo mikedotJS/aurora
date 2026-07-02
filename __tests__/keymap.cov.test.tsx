@@ -1080,6 +1080,51 @@ describe("askClaude (via `? <question>`)", () => {
     expect(pane(id).suggestionLoading).toBe(false);
   });
 
+  it("gathers project context for the pane's cwd and forwards the formatted block to claude_suggest", async () => {
+    const id = mkPane("/repo");
+    tauri.invoke({
+      claude_suggest: () => ({ command: "pnpm build", note: "ok" }),
+      git_repo_info: () => ({ root: "/repo", main_root: "/repo", name: "repo", default_branch: "main", current_branch: "main" }),
+      list_dir: (a: Record<string, unknown>) =>
+        a.path === "/repo" ? [{ name: "package.json", is_dir: false }, { name: "pnpm-lock.yaml", is_dir: false }] : [],
+      read_text_file: (a: Record<string, unknown>) =>
+        a.path === "/repo/package.json" ? JSON.stringify({ scripts: { build: "vite build" } }) : null,
+    });
+    useStore.getState().setInput(id, "? build the project");
+    handleKeyDown(keyEvt("Enter"));
+    await flush();
+    const call = tauri.lastCall("claude_suggest");
+    expect(call?.args.context).toContain("package manager: pnpm");
+    expect(call?.args.context).toContain("Scripts: build");
+  });
+
+  it("passes context: undefined when detection finds nothing useful (context-free call, today's behavior)", async () => {
+    const id = mkPane("/Users/test/proj");
+    tauri.invoke({ claude_suggest: () => ({ command: "ls", note: "ok" }) });
+    useStore.getState().setInput(id, "? list files");
+    handleKeyDown(keyEvt("Enter"));
+    await flush();
+    expect(tauri.lastCall("claude_suggest")?.args.context).toBeUndefined();
+  });
+
+  it("a project-context detection failure is non-fatal — falls back to the context-free call", async () => {
+    const id = mkPane("/repo");
+    tauri.invoke({
+      claude_suggest: () => ({ command: "ls", note: "ok" }),
+      git_repo_info: () => {
+        throw new Error("detection boom");
+      },
+      list_dir: () => {
+        throw new Error("detection boom");
+      },
+    });
+    useStore.getState().setInput(id, "? list files");
+    handleKeyDown(keyEvt("Enter"));
+    await flush();
+    expect(pane(id).suggestion).toEqual({ command: "ls", note: "ok" });
+    expect(tauri.lastCall("claude_suggest")?.args.context).toBeUndefined();
+  });
+
   it("maps a no-key backend error to a needsKey suggestion", async () => {
     const id = mkPane();
     tauri.invoke({

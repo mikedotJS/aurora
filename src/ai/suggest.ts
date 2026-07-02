@@ -17,17 +17,20 @@ export class NoKeyError extends Error {
 }
 
 /**
- * Ask Claude to translate `prompt` into a command. Throws {@link NoKeyError}
- * when no API key is stored, or a plain Error with the backend message
- * otherwise.
+ * Ask Claude to translate `prompt` into a command. `context` is an optional,
+ * pre-rendered project-context block (see `lib/projectContext.ts`) appended to
+ * the backend's system prompt so the suggestion uses the repo's real
+ * toolchain/scripts/targets. Throws {@link NoKeyError} when no API key is
+ * stored, or a plain Error with the backend message otherwise.
  */
 export async function claudeSuggest(
   prompt: string,
   cwd: string,
   model: string,
+  context?: string,
 ): Promise<Suggestion> {
   try {
-    return await invoke<Suggestion>("claude_suggest", { prompt, cwd, model });
+    return await invoke<Suggestion>("claude_suggest", { prompt, cwd, model, context });
   } catch (e) {
     const msg = String(e);
     if (msg.includes("no-key")) throw new NoKeyError();
