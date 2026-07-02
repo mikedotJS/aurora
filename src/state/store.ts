@@ -11,6 +11,7 @@ import type { Suggestion } from "../ai/suggest";
 import { ghostFor } from "../lib/commands";
 import type { DirEntry } from "../lib/sys";
 import { savePersisted, loadRepos, saveRepos, type PersistedWs } from "../lib/workspace";
+import { loadDirFrecency, saveDirFrecency, bumpDir } from "../lib/dirFrecency";
 import type { RepoConfig } from "../lib/repoConfig";
 import type { ServerStatus } from "../term/pty";
 import {
@@ -28,6 +29,13 @@ export interface Completion {
   /** Where the path token starts, and its literal dir prefix — for rebuilding the input on accept. */
   tokenStart: number;
   dir: string;
+}
+
+/** Open `cd `-prefix frecency popover (zoxide-like) in the home terminal. */
+export interface CdSuggest {
+  /** Absolute paths, ranked by frecency score, most-likely first. */
+  items: string[];
+  index: number;
 }
 
 export interface Settings {
@@ -134,6 +142,8 @@ export interface PaneState {
   suggestionLoading: boolean;
   pendingFix: string | null;
   completion: Completion | null;
+  /** Home-terminal-only `cd ` frecency popover; mutually exclusive with `completion`. */
+  cdSuggest: CdSuggest | null;
   inputSelected: boolean;
   rawMode: boolean;
   view: PaneView;
@@ -378,6 +388,13 @@ export interface StoreState {
   moveCompletion: (paneId: number, delta: number) => void;
   acceptCompletion: (paneId: number) => void;
   closeCompletion: (paneId: number) => void;
+  // `cd ` frecency popover (home terminal only)
+  openCdSuggest: (paneId: number, items: string[]) => void;
+  moveCdSuggest: (paneId: number, delta: number) => void;
+  /** Accept the entry at `index` (defaults to the current selection) — completes
+   *  `pane.input` to `cd <path>` without running it. */
+  acceptCdSuggest: (paneId: number, index?: number) => void;
+  closeCdSuggest: (paneId: number) => void;
   selectAllInput: (paneId: number) => void;
   collapseInputSelection: (paneId: number) => void;
   setRawMode: (paneId: number, v: boolean) => void;
@@ -459,6 +476,7 @@ function newPane(cwd: string, repoRoot: string | null = null): PaneState {
     suggestionLoading: false,
     pendingFix: null,
     completion: null,
+    cdSuggest: null,
     inputSelected: false,
     rawMode: false,
     view: "terminal",
@@ -1056,6 +1074,9 @@ export const useStore = create<StoreState>((set, get) => ({
           suggestion: null,
           pendingFix: null,
           completion: null,
+          // Closed here by default; keymap re-opens it right after setInput when
+          // the (possibly new) input still matches `/^cd\s/` in the home terminal.
+          cdSuggest: null,
           inputSelected: false,
           ghost: recomputeGhost(next, s.settings.ghost),
         };
@@ -1071,9 +1092,21 @@ export const useStore = create<StoreState>((set, get) => ({
     })),
 
   setCwd: (paneId, cwd) =>
-    // No-op when unchanged so a repeated OSC 7 (same path) doesn't wipe the
-    // branch the cwd-change effect just fetched.
-    set((s) => ({ workspaces: patchPane(s.workspaces, paneId, (p) => (p.cwd === cwd ? {} : { cwd, branch: null })) })),
+    set((s) => {
+      const pane = findPane(s, paneId);
+      // No-op when unchanged so a repeated OSC 7 (same path) doesn't wipe the
+      // branch the cwd-change effect just fetched.
+      if (!pane || pane.cwd === cwd) return {};
+      // Frecency: +1 per real cwd change in the home terminal only (v1 scope).
+      // Not a `cd`-argument parse — every cwd change counts, including `cd -`,
+      // `pushd`, or a shell alias.
+      const ws = workspaceOfPane(s, paneId);
+      if (ws?.kind === "home") {
+        const next = bumpDir(cwd, loadDirFrecency());
+        saveDirFrecency(next);
+      }
+      return { workspaces: patchPane(s.workspaces, paneId, { cwd, branch: null }) };
+    }),
 
   setBranch: (paneId, branch) =>
     set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { branch }) })),
@@ -1150,9 +1183,9 @@ export const useStore = create<StoreState>((set, get) => ({
         else {
           if (i === -1) return {};
           i = i + 1;
-          if (i >= h.length) return { hIndex: -1, input: "", ghost: "", suggestion: null, completion: null };
+          if (i >= h.length) return { hIndex: -1, input: "", ghost: "", suggestion: null, completion: null, cdSuggest: null };
         }
-        return { hIndex: i, input: h[i], ghost: "", suggestion: null, completion: null };
+        return { hIndex: i, input: h[i], ghost: "", suggestion: null, completion: null, cdSuggest: null };
       }),
     })),
 
@@ -1191,6 +1224,36 @@ export const useStore = create<StoreState>((set, get) => ({
 
   closeCompletion: (paneId) =>
     set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { completion: null }) })),
+
+  openCdSuggest: (paneId, items) =>
+    set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { cdSuggest: { items, index: 0 }, completion: null }) })),
+
+  moveCdSuggest: (paneId, delta) =>
+    set((s) => ({
+      workspaces: patchPane(s.workspaces, paneId, (p) => {
+        const c = p.cdSuggest;
+        if (!c || !c.items.length) return {};
+        return { cdSuggest: { ...c, index: (c.index + delta + c.items.length) % c.items.length } };
+      }),
+    })),
+
+  acceptCdSuggest: (paneId, index) =>
+    set((s) => ({
+      workspaces: patchPane(s.workspaces, paneId, (p) => {
+        const c = p.cdSuggest;
+        if (!c || !c.items.length) return {};
+        const i = index ?? c.index;
+        const path = c.items[i];
+        if (path == null) return {};
+        // Completes the line without running it (decision A) — caret ends at EOL
+        // because `input` is just a string; the caret is rendered at input end.
+        const input = `cd ${path}`;
+        return { input, cdSuggest: null, suggestion: null, ghost: recomputeGhost({ ...p, input, suggestion: null }, s.settings.ghost) };
+      }),
+    })),
+
+  closeCdSuggest: (paneId) =>
+    set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { cdSuggest: null }) })),
 
   selectAllInput: (paneId) =>
     set((s) => ({ workspaces: patchPane(s.workspaces, paneId, (p) => (p.input ? { inputSelected: true } : {})) })),

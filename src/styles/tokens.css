@@ -215,3 +215,48 @@
   height: 0;
   display: none;
 }
+
+/* `cd ` frecency popover rows (Pane.tsx CdSuggestList). Keyboard selection
+   (--active) and mouse hover are distinct but both read as "this row will be
+   accepted": hover is a quiet preview, active is the committed highlight the
+   arrow keys drive — hovering an already-active row just holds that state.
+   The row/badge re-render on every keystroke typed after `cd ` (frecency
+   refilters), so the highlight transition must be cheap and short: only
+   background-color/color/border-color, 130ms ease-out — same duration as the
+   card's own `rise` entrance (tokens.css @keyframes rise) so the whole popover
+   reads as one motion vocabulary. ease-out (not linear/ease) because a
+   selection settling into place is a soft arrival, never a mechanical snap. */
+.cd-suggest-row {
+  transition: background-color 130ms ease-out;
+}
+.cd-suggest-row:hover {
+  background: color-mix(in oklab, var(--ac) 9%, transparent);
+}
+.cd-suggest-row--active,
+.cd-suggest-row--active:hover {
+  background: color-mix(in oklab, var(--ac) 18%, transparent);
+}
+
+/* ⌥N direct-accept badge: reads as a keyboard shortcut, not a UI chip — small,
+   muted, monospace, quieter than the path it sits beside so it never
+   competes with it for the eye. */
+.cd-suggest-badge {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--faint);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 5px;
+  transition: color 130ms ease-out, border-color 130ms ease-out, background-color 130ms ease-out;
+}
+.cd-suggest-row:hover .cd-suggest-badge {
+  color: var(--dim);
+  border-color: color-mix(in oklab, var(--ac) 40%, var(--line));
+}
+.cd-suggest-badge--active {
+  color: var(--acd);
+  border-color: color-mix(in oklab, var(--ac) 55%, var(--line));
+  background: color-mix(in oklab, var(--ac) 12%, transparent);
+}
