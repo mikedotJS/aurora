@@ -10,7 +10,7 @@ import { deleteWorkspace } from "../lib/teardown";
 import { statusOf, dotColor, dotPulses, statusLine } from "../lib/workspace";
 import { addRepoFromFolder } from "../lib/repo";
 import { readOffset, parseDerivedPorts, portScripts, serverUnits } from "../lib/ports";
-import { serversUp, runServers, stopServers } from "../lib/servers";
+import { serversUp, runServers, stopServers, repoLabel } from "../lib/servers";
 
 // --- Components ---
 
@@ -120,9 +120,9 @@ const WorkspaceCard = memo(function WorkspaceCard({ ws, active }: { ws: Workspac
       useStore.getState().notify({
         color: "var(--err)",
         icon: "✕",
-        headline: "Delete failed",
+        headline: `Couldn't delete ${ws.title}`,
         sub: result.error,
-        repo: ws.repoId ?? "",
+        repo: repoLabel(ws.repoId),
       });
     }
   };
@@ -850,9 +850,9 @@ export function WorkspaceContextBar() {
                   useStore.getState().notify({
                     color: "var(--err)",
                     icon: "⚡",
-                    headline: up ? "Stop servers failed" : "Run servers failed",
+                    headline: `Couldn't ${up ? "stop" : "start"} servers — ${ws.title}`,
                     sub: e instanceof Error ? e.message : String(e),
-                    repo: ws.repoId ?? "",
+                    repo: repoLabel(ws.repoId),
                   });
                 });
               }}

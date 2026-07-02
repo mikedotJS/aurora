@@ -15,7 +15,7 @@ function flush(): Promise<void> {
 }
 
 function mr(overrides: Partial<GitlabMr> = {}): GitlabMr {
-  return { iid: 1, title: "Fix thing", branch: "feat/x", draft: false, author: "ada", web_url: "https://gl/mr/1", updated: "t1", ...overrides };
+  return { iid: 1, project_id: 100, title: "Fix thing", branch: "feat/x", draft: false, author: "ada", web_url: "https://gl/mr/1", updated: "t1", notes: 0, sha: "sha1", ...overrides };
 }
 
 beforeEach(() => {
@@ -83,6 +83,43 @@ describe("refreshRepoMrs — MR polling + notification diffing", () => {
     tauri.invoke({ glab_mr_list: () => [mr({ iid: 7, updated: "t2" })] });
     await refreshRepoMrs("/repo/updated");
     const notif = useStore.getState().notifs.find((n) => n.headline.includes("MR !7 updated"));
+    expect(notif).toBeDefined();
+  });
+
+  it("a rising comment count raises a 'New comment' notification naming the author", async () => {
+    tauri.invoke({ glab_mr_list: () => [mr({ iid: 8, notes: 1 })] });
+    await refreshRepoMrs("/repo/comment");
+    tauri.invoke({
+      glab_mr_list: () => [mr({ iid: 8, notes: 2, updated: "t2" })],
+      glab_mr_note_author: () => "bob",
+    });
+    await refreshRepoMrs("/repo/comment");
+    await flush();
+    const notif = useStore.getState().notifs.find((n) => n.headline.includes("New comment"));
+    expect(notif?.headline).toBe("New comment from @bob on MR !8");
+  });
+
+  it("falls back to an author-less 'New comment' when the note-author lookup fails", async () => {
+    tauri.invoke({ glab_mr_list: () => [mr({ iid: 11, notes: 0 })] });
+    await refreshRepoMrs("/repo/comment-noauthor");
+    tauri.invoke({
+      glab_mr_list: () => [mr({ iid: 11, notes: 3, updated: "t2" })],
+      glab_mr_note_author: () => {
+        throw new Error("glab: no human note author");
+      },
+    });
+    await refreshRepoMrs("/repo/comment-noauthor");
+    await flush();
+    const notif = useStore.getState().notifs.find((n) => n.headline.includes("new comments"));
+    expect(notif?.headline).toBe("3 new comments on MR !11");
+  });
+
+  it("a changed head sha (no new comment) raises a 'New commits' notification", async () => {
+    tauri.invoke({ glab_mr_list: () => [mr({ iid: 9, sha: "aaa" })] });
+    await refreshRepoMrs("/repo/pushed");
+    tauri.invoke({ glab_mr_list: () => [mr({ iid: 9, sha: "bbb", updated: "t2" })] });
+    await refreshRepoMrs("/repo/pushed");
+    const notif = useStore.getState().notifs.find((n) => n.headline.includes("New commits on MR !9"));
     expect(notif).toBeDefined();
   });
 

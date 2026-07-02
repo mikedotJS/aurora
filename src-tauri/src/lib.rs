@@ -59,6 +59,7 @@ pub fn run() {
             glab::glab_mr_list,
             glab::glab_current_user,
             glab::glab_mr_create,
+            glab::glab_mr_note_author,
             jira::jira_set_token,
             jira::jira_token_present,
             jira::jira_clear_token,

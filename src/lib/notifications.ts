@@ -7,7 +7,7 @@ import { useStore, allRepoRoots, type GitlabMr } from "../state/store";
 import { getRepoConfig } from "./repoConfig";
 import { jiraAddRemoteLink, jiraTransition, repoJira } from "./jira";
 
-type Snap = Map<number, { updated: string; draft: boolean }>;
+type Snap = Map<number, { updated: string; draft: boolean; notes: number; sha: string }>;
 
 const snapshots = new Map<string, Snap>();
 const notGitlab = new Set<string>();
@@ -18,6 +18,22 @@ const INFO = "oklch(0.72 0.1 255)";
 
 function visitedRoots(): string[] {
   return [...allRepoRoots(useStore.getState())];
+}
+
+// Latest human commenter on an MR, for the "new comment" notification. Purely
+// decorative: any failure (older glab, self-hosted quirk, missing project_id)
+// yields null and the headline just drops the "from @…" — never blocks the notif.
+async function noteAuthor(root: string, mr: GitlabMr): Promise<string | null> {
+  if (!mr.project_id) return null;
+  try {
+    return await invoke<string>("glab_mr_note_author", {
+      cwd: root,
+      projectId: mr.project_id,
+      iid: mr.iid,
+    });
+  } catch {
+    return null;
+  }
 }
 
 async function pollRepo(root: string) {
@@ -36,16 +52,31 @@ async function pollRepo(root: string) {
   const repo = root.split("/").filter(Boolean).pop() || root;
   const prev = snapshots.get(root);
   const next: Snap = new Map();
-  for (const mr of mrs) next.set(mr.iid, { updated: mr.updated, draft: mr.draft });
+  for (const mr of mrs) next.set(mr.iid, { updated: mr.updated, draft: mr.draft, notes: mr.notes, sha: mr.sha });
   snapshots.set(root, next);
 
   if (!prev || !st.settings.notifyMr) return; // first poll seeds only
   for (const mr of mrs) {
     const p = prev.get(mr.iid);
     if (!p) {
-      st.notify({ color: AC, icon: "⇋", headline: `New MR !${mr.iid}`, sub: mr.title, repo, url: mr.web_url });
+      const by = mr.author ? ` by @${mr.author}` : "";
+      const draft = mr.draft ? " (draft)" : "";
+      st.notify({ color: AC, icon: "⇋", headline: `New MR !${mr.iid}${by}${draft}`, sub: mr.title, repo, url: mr.web_url });
     } else if (p.draft && !mr.draft) {
       st.notify({ color: AC, icon: "✓", headline: `MR !${mr.iid} ready for review`, sub: mr.title, repo, url: mr.web_url });
+    } else if (mr.notes > p.notes) {
+      // A comment was added — say so, instead of the generic "updated". Fall
+      // through to "updated" only when the change wasn't a new comment.
+      const n = mr.notes - p.notes;
+      const who = await noteAuthor(root, mr); // latest commenter's username, or null
+      const headline =
+        n === 1
+          ? `New comment${who ? ` from @${who}` : ""} on MR !${mr.iid}`
+          : `${n} new comments${who ? ` (latest @${who})` : ""} on MR !${mr.iid}`;
+      st.notify({ color: INFO, icon: "💬", headline, sub: mr.title, repo, url: mr.web_url });
+    } else if (mr.sha && p.sha && mr.sha !== p.sha) {
+      // Head sha moved → new commits pushed. More useful than a bare "updated".
+      st.notify({ color: INFO, icon: "↑", headline: `New commits on MR !${mr.iid}`, sub: mr.title, repo, url: mr.web_url });
     } else if (p.updated !== mr.updated) {
       st.notify({ color: INFO, icon: "↻", headline: `MR !${mr.iid} updated`, sub: mr.title, repo, url: mr.web_url });
     }
