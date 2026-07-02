@@ -122,6 +122,53 @@ describe("ChangesView — empty changes", () => {
 });
 
 describe("ChangesView — file list & selection", () => {
+  // A-1 root-cause regression guard (.context/e2e-anomalies.md). The e2e
+  // reported the "Staged" section "never rendering" for a staged package.json
+  // while README.md (unstaged) + untracked.txt did. This reproduces the *exact*
+  // fixture data git_changed_files returns (staged side first, then unstaged,
+  // then untracked — src-tauri/src/git.rs git_changed_files) and proves the
+  // Staged section DOES render: neither the staged/unstaged split
+  // (ChangesView.tsx:93-94) nor a serde field-name mismatch on `staged`
+  // (git.rs ChangedFile ↔ lib/git.ts ChangedFile) drops staged files.
+  //
+  // The real A-1 cause is NOT a render bug: the section headers carry CSS
+  // `text-transform: uppercase` (ChangesView.tsx:186,194). The source label is
+  // "Staged", but `element.innerText` is text-transform-aware and yields
+  // "STAGED". The e2e's bodyHasText() probes `document.body.innerText` for the
+  // mixed-case "Staged" / "Staged · N", which can never substring-match the
+  // uppercased render — so the section was invisible to the *assertion*, not to
+  // the user. The two assertions below pin exactly that: the header is present
+  // in `textContent` ("Staged · 1") but NOT verbatim in `innerText`, which
+  // uppercases it. Any future case probe of this header must use `textContent`
+  // or a case-insensitive match.
+  it("A-1: renders the Staged section; its header is uppercased in innerText, not verbatim", async () => {
+    const pane = mkPane();
+    setup(pane);
+    tauri.invoke({
+      git_changed_files: (): ChangedFile[] => [
+        { path: "package.json", old_path: null, status: "M", staged: true, added: 2, removed: 1 },
+        { path: "README.md", old_path: null, status: "M", staged: false, added: 1, removed: 0 },
+        { path: "untracked.txt", old_path: null, status: "?", staged: false, added: null, removed: null },
+      ],
+      git_diff_file: () => UNIFIED_DIFF,
+      git_status_summary: () => ({ files: 3, added: 3, removed: 1, conflicted: 0 }),
+    });
+    const { container } = render(<ChangesView wsId={"w-" + pane.id} />);
+    await waitFor(() => expect(container.textContent).toContain("README.md"));
+    // The Staged section + its file render (textContent, not text-transformed).
+    await waitFor(() => expect(container.textContent).toContain("Staged · 1"));
+    expect(container.textContent).toContain("package.json");
+    expect(container.textContent).toContain("Changes · 2");
+    expect(container.textContent).toContain("untracked.txt");
+    // Root cause: innerText uppercases the header (text-transform), so a
+    // mixed-case "Staged" probe (what the e2e used) misses it while the
+    // uppercased "STAGED" is present — the file names (no transform) are found.
+    const innerText = (document.body as unknown as { innerText: string }).innerText;
+    expect(innerText).toContain("STAGED · 1");
+    expect(innerText).not.toContain("Staged · 1");
+    expect(innerText).toContain("package.json");
+  });
+
   it("lists staged and unstaged sections, auto-selects the first file, and loads its worktree diff", async () => {
     const pane = mkPane();
     const ws = setup(pane);
