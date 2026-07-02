@@ -10,6 +10,12 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev-only: pull `ANTHROPIC_API_KEY` from a gitignored `.env` so `tauri dev`
+    // reads the key from there instead of the OS keychain (avoids the repeated
+    // keychain-access prompt caused by the ad-hoc-signed debug binary).
+    #[cfg(debug_assertions)]
+    claude::load_dotenv();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
