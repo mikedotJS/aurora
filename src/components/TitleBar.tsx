@@ -14,6 +14,17 @@ export function TitleBar() {
   const railCollapsed = useStore((s) => s.railCollapsed);
   const branch = useStore((s) => activeWorkspace(s)?.branch ?? null);
 
+  // The Home terminal lives here — a top-level front door, decoupled from the
+  // Workspaces zone, always visible (independent of the rail's collapsed state).
+  // Derived from the already-subscribed `workspaces` array (a stable ref) — never
+  // a `useStore(s => s.workspaces.find(...))` selector, which would fabricate a
+  // fresh value each render and trip the Zustand fresh-ref render loop.
+  const workspaces = useStore((s) => s.workspaces);
+  const activeWs = useStore((s) => s.activeWs);
+  const switchWorkspace = useStore((s) => s.switchWorkspace);
+  const homeWs = workspaces.find((w) => w.kind === "home");
+  const homeActive = homeWs != null && activeWs === homeWs.id;
+
   return (
     <div
       data-tauri-drag-region
@@ -51,6 +62,30 @@ export function TitleBar() {
           title="fullscreen (⌥ to zoom)"
           style={{ width: 12, height: 12, borderRadius: "50%", background: "#5dc466", cursor: "pointer" }}
         />
+
+        {homeWs && (
+          <>
+            {/* Hairline divider — sets the ~ shell apart from the window controls
+                so it reads as its own top-level zone, not a fourth traffic light. */}
+            <span
+              aria-hidden
+              style={{ width: 1, height: 16, marginLeft: 4, background: "var(--line)", flex: "0 0 auto" }}
+            />
+            <button
+              type="button"
+              className={`aurora-titlebar-home${homeActive ? " aurora-titlebar-home--active" : ""}`}
+              onClick={() => switchWorkspace(homeWs.id)}
+              aria-label="Home terminal (~)"
+              aria-current={homeActive ? "true" : undefined}
+              title="Home terminal — always-on shell in ~  (⌘0)"
+              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+            >
+              <span className="aurora-titlebar-home__glyph" aria-hidden>
+                ~
+              </span>
+            </button>
+          </>
+        )}
       </div>
 
       <div

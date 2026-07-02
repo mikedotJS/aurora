@@ -99,14 +99,26 @@ describe("App — boot gate", () => {
 });
 
 describe("App — boot with no repo context", () => {
-  it("settles on the empty state (0 repos, 0 workspaces) with the rail still visible", async () => {
-    const { getByText, queryByTitle } = render(<App />);
+  it("settles on the Home terminal (0 repos, 0 restored workspaces) with the rail still visible", async () => {
+    const { getAllByText, getByLabelText, queryByTitle } = render(<App />);
     await waitBooted();
-    expect(getByText("No workspace open — add a repository to get started.")).toBeTruthy();
+    // No central empty pane; the Home terminal is active. Home lives in the
+    // TitleBar (a top-level entry, decoupled from the rail), and the rail shows
+    // the "add repository" onboarding.
+    const s = useStore.getState();
+    expect(s.workspaces).toHaveLength(1);
+    expect(s.workspaces[0].kind).toBe("home");
+    expect(s.activeWs).toBe(s.workspaces[0].id);
+    expect(getByLabelText("Home terminal (~)")).toBeTruthy();
+    // The rail shows the zero-repo onboarding: a primary "Add repository" CTA.
+    expect(getByLabelText("Add repository").className).toContain("aurora-empty-primary");
     // Rail defaults to visible (not collapsed) when nothing overrides it, and
-    // TitleBar renders its normal (non-collapsed) "aurora — zsh" layout.
+    // TitleBar renders its normal (non-collapsed) "aurora — zsh" layout. "zsh"
+    // now also appears in the live Home terminal pane (Home is really active,
+    // unlike the old central empty pane), so assert at least one match rather
+    // than a single unique match.
     expect(queryByTitle("switch workspace")).toBeNull();
-    expect(getByText("zsh")).toBeTruthy();
+    expect(getAllByText("zsh").length).toBeGreaterThan(0);
   });
 });
 
@@ -120,17 +132,20 @@ describe("App — boot with a real repo", () => {
     seedScriptsFor(root); // see the WorkspaceContextBar-crash note above waitBooted()
   }
 
-  it("creates and activates a workspace for the detected repo; renders the tab strip instead of the empty state", async () => {
+  it("creates and activates a workspace for the detected repo; renders the tab strip (Home present but not active)", async () => {
     stubRepo();
-    const { container, queryByText } = render(<App />);
+    const { container, queryByLabelText } = render(<App />);
     await waitBooted();
-    expect(queryByText("No workspace open — add a repository to get started.")).toBeNull();
+    // With a real repo, the rail shows repo groups — not the zero-repo onboarding CTA.
+    expect(queryByLabelText("Add repository")).toBeNull();
     // TitleBar's branch span is the only one with a bare `title="main"` attribute
     // (the rail's workspace card also shows the branch, but without that title).
     const titleBarBranch = container.querySelector('span[title="main"]');
     expect(titleBarBranch?.textContent).toBe("⎇ main");
     const s = useStore.getState();
-    expect(s.workspaces.length).toBe(1);
+    // The repo boot lane + the always-present Home terminal.
+    expect(s.workspaces.length).toBe(2);
+    expect(s.workspaces.filter((w) => w.kind === "home")).toHaveLength(1);
     expect(s.activeWs).toBe(s.workspaces[0].id);
     expect(s.apiKeyPresent).toBe(true);
     // diff-summary effect ran and applied the stubbed summary.
@@ -293,7 +308,11 @@ describe("App — stale-workspace pruning on boot", () => {
     render(<App />);
     await waitBooted();
     const s = useStore.getState();
-    expect(s.workspaces.map((w) => w.id).sort()).toEqual(["w-alive-repo", "w-manual"]);
+    // The stale-prune never removes the Home terminal — it isn't a restored
+    // orphan, it's ensured by `init` independently of the persisted list.
+    expect(s.workspaces).toHaveLength(3);
+    expect(s.workspaces.map((w) => w.id)).toEqual(expect.arrayContaining(["w-alive-repo", "w-manual"]));
+    expect(s.workspaces.filter((w) => w.kind === "home")).toHaveLength(1);
     expect(s.activeWs).toBe("w-alive-repo");
   });
 });
@@ -376,9 +395,11 @@ describe("App — auto-rename tab effect", () => {
 describe("App — narrow-breakpoint rail auto-collapse", () => {
   it("auto-collapses crossing into narrow, does not auto-reopen on wide, suppresses one re-collapse after a manual reopen, then re-arms after a full wide/narrow cycle", async () => {
     window.innerWidth = 1200;
-    const { getByText, queryByText, getByTitle } = render(<App />);
+    const { getAllByText, getByTitle } = render(<App />);
     await waitBooted();
-    expect(getByText("zsh")).toBeTruthy(); // TitleBar's expanded-rail label
+    // "zsh" appears in both TitleBar's expanded-rail label and the live Home
+    // terminal pane (Home is really active on a contextless boot).
+    expect(getAllByText("zsh").length).toBeGreaterThan(0);
 
     // Cross into narrow -> auto-collapse.
     window.innerWidth = 500;
@@ -400,7 +421,7 @@ describe("App — narrow-breakpoint rail auto-collapse", () => {
 
     // Manual reopen while still narrow -> suppresses the *next* auto-collapse.
     useStore.getState().setRailCollapsed(false);
-    await waitFor(() => expect(queryByText("zsh")).toBeTruthy());
+    await waitFor(() => expect(getAllByText("zsh").length).toBeGreaterThan(0));
 
     // Returning to wide resets the override (per design: only suppresses until
     // the window goes wide and crosses back into narrow).

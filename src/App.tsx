@@ -12,7 +12,6 @@ import { NotifSheet } from "./components/NotifSheet";
 import { WorkspaceRail, WorkspaceContextBar } from "./components/WorkspaceRail";
 import { WorkspaceCommand } from "./components/WorkspaceCommand";
 import { WorkspaceSettings } from "./components/WorkspaceSettings";
-import { EmptyState } from "./components/EmptyState";
 import { WorkspacesIntro } from "./components/WorkspacesIntro";
 import {
   useStore,
@@ -39,7 +38,6 @@ import { BP_NARROW_PX } from "./lib/useMediaQuery";
 
 export default function App() {
   const ready = useStore((s) => s.initialized);
-  const hasActiveWs = useStore((s) => activeWorkspace(s) !== undefined);
   const settingsOpen = useStore((s) => s.settingsOpen);
   const workspaceSettingsOpen = useStore((s) => s.workspaceSettingsRepo !== null);
   const scriptsSetupOpen = useStore((s) => s.scriptsSetupOpen);
@@ -266,15 +264,12 @@ export default function App() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {!railCollapsed && <WorkspaceRail />}
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          {hasActiveWs ? (
-            <>
-              <WorkspaceContextBar />
-              <TabStrip />
-              <PaneArea />
-            </>
-          ) : (
-            <EmptyState />
-          )}
+          {/* The Home terminal guarantees an active workspace after `init` — there
+              is no reachable "no active workspace" state, so the content column
+              always renders the active terminal (never a central empty pane). */}
+          <WorkspaceContextBar />
+          <TabStrip />
+          <PaneArea />
         </div>
       </div>
       <StatusBar />

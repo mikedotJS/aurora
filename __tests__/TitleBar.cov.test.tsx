@@ -11,6 +11,7 @@ let seq = 90000;
 function mkWorkspace(overrides: Partial<Workspace> = {}): Workspace {
   return {
     id: "w-" + seq++,
+    kind: "workspace",
     repoId: null,
     title: "ws",
     issueKey: null,
@@ -82,6 +83,56 @@ describe("TitleBar — center label", () => {
     const { queryByText, getByTitle } = render(<TitleBar />);
     expect(queryByText("aurora")).toBeNull();
     expect(getByTitle("switch workspace")).toBeTruthy();
+  });
+});
+
+describe("TitleBar — Home terminal (~)", () => {
+  const home = () =>
+    mkWorkspace({ id: "home", kind: "home", repoId: null, title: "Home", dir: "/Users/tester" });
+
+  it("renders the ~ Home button (top-level, independent of the rail) when a Home terminal exists", () => {
+    const h = home();
+    seed({ workspaces: [h], activeWs: h.id });
+    const { getByLabelText } = render(<TitleBar />);
+    const btn = getByLabelText("Home terminal (~)");
+    expect(btn).toBeTruthy();
+    expect(btn.textContent).toContain("~");
+    // Active state carries aria-current and the --active class (contained accent
+    // treatment, not a protruding rule — asserted structurally, not by pixels).
+    expect(btn.getAttribute("aria-current")).toBe("true");
+    expect(btn.className).toContain("aurora-titlebar-home--active");
+  });
+
+  it("stays visible when the rail is collapsed (decoupled from the Workspaces zone)", () => {
+    const h = home();
+    seed({ workspaces: [h], activeWs: h.id, railCollapsed: true });
+    const { getByLabelText } = render(<TitleBar />);
+    expect(getByLabelText("Home terminal (~)")).toBeTruthy();
+  });
+
+  it("is not marked active when another workspace is the active terminal", () => {
+    const h = home();
+    const ws = mkWorkspace({ id: "wlocal", title: "manual lane" });
+    seed({ workspaces: [h, ws], activeWs: ws.id });
+    const { getByLabelText } = render(<TitleBar />);
+    const btn = getByLabelText("Home terminal (~)");
+    expect(btn.getAttribute("aria-current")).toBeNull();
+    expect(btn.className).not.toContain("aurora-titlebar-home--active");
+  });
+
+  it("clicking the ~ button switches to the Home terminal", () => {
+    const h = home();
+    const ws = mkWorkspace({ id: "wlocal", title: "manual lane" });
+    seed({ workspaces: [h, ws], activeWs: ws.id });
+    const { getByLabelText } = render(<TitleBar />);
+    fireEvent.click(getByLabelText("Home terminal (~)"));
+    expect(useStore.getState().activeWs).toBe("home");
+  });
+
+  it("renders no ~ button when there is no Home terminal", () => {
+    seed({ workspaces: [], activeWs: null });
+    const { queryByLabelText } = render(<TitleBar />);
+    expect(queryByLabelText("Home terminal (~)")).toBeNull();
   });
 });
 

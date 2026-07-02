@@ -79,7 +79,10 @@ const WorkspaceCard = memo(function WorkspaceCard({ ws, active }: { ws: Workspac
   const isLast = workspaceCount <= 1;
   // Teardown is destructive (it removes a git worktree), so the trash rides only
   // on worktree-backed cards — never the repo's main checkout or a manual lane.
-  const showTrash = worktreeBacked && !isLast;
+  // `ws.kind !== "home"` is belt-and-suspenders: Home's `repoId: null` already
+  // keeps `worktreeBacked` false, but the explicit check makes the "Home is
+  // permanent" invariant independent of that derivation.
+  const showTrash = worktreeBacked && !isLast && ws.kind !== "home";
 
   const openChanges = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -415,7 +418,11 @@ export function WorkspaceRail() {
   const match = (w: Workspace) =>
     !q ||
     [w.issueKey, w.title, w.branch].some((x) => x?.toLowerCase().includes(q));
-  const shown = workspaces.filter(match);
+  const hasRepos = repos.length > 0;
+  // Home is not a workspace or a repo conceptually: excluded from every group
+  // (repo groups and the `local` bucket). It lives in the TitleBar as its own
+  // top-level entry, decoupled from the Workspaces zone entirely.
+  const shown = workspaces.filter((w) => w.kind !== "home" && match(w));
 
   // group: every known repo in order (shown even with no workspaces, so a repo
   // added by folder appears), then a "local" bucket for manual lanes. While
@@ -470,7 +477,7 @@ export function WorkspaceRail() {
             padding: "1px 5px",
           }}
         >
-          {workspaces.length}
+          {workspaces.filter((w) => w.kind !== "home").length}
         </span>
         <span
           onClick={() => setRailCollapsed(true)}
@@ -540,19 +547,50 @@ export function WorkspaceRail() {
       </div>
 
       <div className="ascroll" style={{ flex: 1, overflowY: "auto", padding: "7px 0 10px", minHeight: 0 }}>
-        {groups.length === 0 && (
-          <div
-            style={{
-              padding: "18px 16px",
-              textAlign: "center",
-              fontFamily: "var(--sans)",
-              fontSize: 12,
-              color: "var(--faint)",
-            }}
-          >
-            {q ? `no workspace matches "${filter.trim()}"` : "no workspaces yet"}
-          </div>
-        )}
+        {groups.length === 0 &&
+          (q ? (
+            <div className="aurora-rail-nomatch">no workspace matches "{filter.trim()}"</div>
+          ) : (
+            // Reachable only with zero known repos: every known repo always gets
+            // its own group entry (pushed unconditionally outside a filter — see
+            // the groups loop above), so groups.length > 0 whenever repos.length
+            // > 0. The "repos exist, create a workspace" case is instead covered
+            // by each repo group's own header ⊕ / empty-row affordance below.
+            //
+            // The onboarding *is* the primary CTA here — the app's single gesture
+            // in the zero-repo state is "Add repository" (a workspace can't exist
+            // without one). It's wired to the same `onAddRepo` handler the footer
+            // uses; when the rail is empty the footer is hidden (see `hasRepos &&`
+            // below) so there's never a duplicate "Add repository" control.
+            <div className="aurora-rail-empty">
+              <div className="aurora-rail-empty-title">Start with a repository</div>
+              <button
+                type="button"
+                className="aurora-empty-primary aurora-rail-empty-cta"
+                onClick={onAddRepo}
+                disabled={addBusy}
+                title="add an existing repository folder"
+                aria-label="Add repository"
+              >
+                <span className="aurora-rail-empty-plus" aria-hidden>
+                  ⇋
+                </span>
+                {addBusy ? "Opening…" : "Add repository"}
+              </button>
+              {addError ? (
+                <div className="aurora-rail-empty-error" role="alert">
+                  {addError}
+                </div>
+              ) : (
+                <div className="aurora-rail-empty-hint">
+                  <span className="aurora-rail-empty-hash" aria-hidden>
+                    #
+                  </span>
+                  the ~ shell is always one click away
+                </div>
+              )}
+            </div>
+          ))}
         {groups.map((g) => {
           const repoId = g.key === "__local" ? undefined : g.key;
           return (
@@ -587,34 +625,47 @@ export function WorkspaceRail() {
         })}
       </div>
 
-      <div style={{ flex: "0 0 auto", padding: "9px 10px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 7 }}>
-        <div
-          onClick={onAddRepo}
-          title="add an existing repository folder"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 7,
-            fontFamily: "var(--sans)",
-            fontSize: 11,
-            color: "var(--dim)",
-            border: "1px solid var(--line)",
-            borderRadius: 8,
-            padding: 7,
-            cursor: addBusy ? "default" : "pointer",
-            opacity: addBusy ? 0.6 : 1,
-          }}
-        >
-          <span style={{ color: "var(--acd)" }}>⇋</span>
-          {addBusy ? "Opening…" : "Add repository"}
+      {/* Footer "Add repository" — the quiet, always-there control once at least
+          one repo exists. Hidden in the zero-repo state, where the onboarding
+          block above owns the (single) primary "Add repository" CTA instead, so
+          the two never compete. Both share `onAddRepo` / `addBusy` / `addError`,
+          but carry distinct title/aria-label ("add another…") so an automated
+          query (or a screen reader) never conflates the two controls. */}
+      {hasRepos && (
+        <div style={{ flex: "0 0 auto", padding: "9px 10px", borderTop: "1px solid var(--line)", display: "flex", flexDirection: "column", gap: 7 }}>
+          <button
+            type="button"
+            onClick={onAddRepo}
+            disabled={addBusy}
+            title="add another repository folder"
+            aria-label="Add another repository"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 7,
+              width: "100%",
+              fontFamily: "var(--sans)",
+              fontSize: 11,
+              color: "var(--dim)",
+              background: "transparent",
+              border: "1px solid var(--line)",
+              borderRadius: 8,
+              padding: 7,
+              cursor: addBusy ? "default" : "pointer",
+              opacity: addBusy ? 0.6 : 1,
+            }}
+          >
+            <span style={{ color: "var(--acd)" }}>⇋</span>
+            {addBusy ? "Opening…" : "Add repository"}
+          </button>
+          {addError && (
+            <div style={{ fontFamily: "var(--sans)", fontSize: 10.5, color: "var(--err)", lineHeight: 1.35, padding: "0 2px" }}>
+              {addError}
+            </div>
+          )}
         </div>
-        {addError && (
-          <div style={{ fontFamily: "var(--sans)", fontSize: 10.5, color: "var(--err)", lineHeight: 1.35, padding: "0 2px" }}>
-            {addError}
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }
