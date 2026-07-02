@@ -89,7 +89,6 @@ function makePane(overrides: Record<string, unknown> = {}) {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: false,
     dirNames: [],
@@ -351,7 +350,7 @@ describe("WorkspaceCard — content branches", () => {
     expect(container.querySelector('[title="review changes"]')).toBeNull();
   });
 
-  it("clicking the diff chip switches workspace and sets the pane view to 'changes' exactly once (stopPropagation works)", () => {
+  it("clicking the diff chip switches workspace and opens the Changes overlay exactly once (stopPropagation works)", () => {
     const w = makeWorkspace({
       id: "w1",
       title: "Has diff",
@@ -374,9 +373,8 @@ describe("WorkspaceCard — content branches", () => {
     // also fire — only the one call made by openChanges itself.
     expect(switchSpy).toHaveBeenCalledTimes(1);
     expect(useStore.getState().activeWs).toBe("w1");
-    const updated = useStore.getState().workspaces.find((x) => x.id === "w1")!;
-    const pane = updated.tabs[updated.active].panes[updated.tabs[updated.active].active];
-    expect(pane.view).toBe("changes");
+    // The overlay opens for the workspace we switched to — no pane is touched.
+    expect(useStore.getState().changesWsId).toBe("w1");
   });
 
   it("clicking an inactive card switches the active workspace", () => {

@@ -67,6 +67,7 @@ beforeEach(() => {
   useStore.setState({
     command: null,
     panel: null,
+    changesWsId: null,
     settingsOpen: false,
     scriptsSetupOpen: false,
     find: { open: false, query: "", current: 0 },
@@ -303,8 +304,8 @@ describe("handleKeyDown — ⌘ shortcuts", () => {
     expect(pane(id).suggestion?.command).toBe("git log");
   });
 
-  it("⌘, opens settings; ⌘K opens the command palette; ⌘G switches to the changes view", () => {
-    const id = mkPane();
+  it("⌘, opens settings; ⌘K opens the command palette; ⌘G opens the changes overlay", () => {
+    mkPane();
     handleKeyDown(keyEvt(",", { metaKey: true }));
     expect(useStore.getState().settingsOpen).toBe(true);
     useStore.setState({ settingsOpen: false }); // modal priority would otherwise swallow the next shortcuts
@@ -312,16 +313,18 @@ describe("handleKeyDown — ⌘ shortcuts", () => {
     expect(useStore.getState().command).not.toBeNull();
     useStore.setState({ command: null });
     handleKeyDown(keyEvt("g", { metaKey: true }));
-    expect(pane(id).view).toBe("changes");
+    // The overlay opens for the active workspace — never on a pane.
+    expect(useStore.getState().changesWsId).toBe(useStore.getState().activeWs);
+    expect(useStore.getState().changesWsId).not.toBeNull();
   });
 
-  it("⌘⌥D toggles the pane view between changes and terminal", () => {
-    const id = mkPane();
-    useStore.getState().setPaneView(id, "changes");
+  it("⌘⌥D toggles the changes overlay open <-> closed", () => {
+    mkPane();
+    useStore.getState().openChanges();
     handleKeyDown(keyEvt("d", { metaKey: true, altKey: true }));
-    expect(pane(id).view).toBe("terminal");
+    expect(useStore.getState().changesWsId).toBeNull();
     handleKeyDown(keyEvt("D", { metaKey: true, altKey: true }));
-    expect(pane(id).view).toBe("changes");
+    expect(useStore.getState().changesWsId).toBe(useStore.getState().activeWs);
   });
 
   it("⌘D splits horizontally, ⌘⇧D splits vertically", () => {
@@ -452,28 +455,28 @@ describe("handleKeyDown — ⌃ control codes", () => {
 // ── Changes-view swallow ─────────────────────────────────────────────────────
 
 describe("handleKeyDown — changes view", () => {
-  it("Escape drops back to the terminal view", () => {
-    const id = mkPane();
-    useStore.getState().setPaneView(id, "changes");
+  it("Escape closes the changes overlay", () => {
+    mkPane();
+    useStore.getState().openChanges();
     handleKeyDown(keyEvt("Escape"));
-    expect(pane(id).view).toBe("terminal");
+    expect(useStore.getState().changesWsId).toBeNull();
   });
 
   it("other keys are swallowed (prompt underneath is not touched), no preventDefault", () => {
     const id = mkPane();
-    useStore.getState().setPaneView(id, "changes");
+    useStore.getState().openChanges();
     const evt = keyEvt("x");
     handleKeyDown(evt);
     expect(pane(id).input).toBe("");
     expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(0);
   });
 
-  it("the Changes view owns its keys even in rawMode: Escape exits, other keys are swallowed", () => {
-    // The Changes view overlays the pane's terminal, so it must intercept keys
+  it("the Changes overlay owns its keys even in rawMode: Escape exits, other keys are swallowed", () => {
+    // The Changes overlay paints over the pane grid, so it must intercept keys
     // even when a full-screen program (rawMode) runs underneath — otherwise you
     // can't leave the view and keystrokes leak to the hidden program.
     const id = mkPane();
-    useStore.getState().setPaneView(id, "changes");
+    useStore.getState().openChanges();
     useStore.getState().setRawMode(id, true);
 
     // a control key that would otherwise be forwarded to the PTY is swallowed
@@ -486,9 +489,9 @@ describe("handleKeyDown — changes view", () => {
     handleKeyDown(keyEvt("x"));
     expect(pane(id).input).toBe("");
 
-    // Escape drops back to the terminal
+    // Escape closes the overlay
     handleKeyDown(keyEvt("Escape"));
-    expect(pane(id).view).toBe("terminal");
+    expect(useStore.getState().changesWsId).toBeNull();
   });
 });
 

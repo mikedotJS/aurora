@@ -46,7 +46,6 @@ function mkPane(overrides: Partial<PaneState> = {}): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: false,
     dirNames: [],
@@ -499,7 +498,7 @@ describe("command palette", () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════
-// Pane runtime: setPaneRuntime / markExited / respawnPane / setPaneView
+// Pane runtime: setPaneRuntime / markExited / respawnPane
 // ══════════════════════════════════════════════════════════════════════════
 
 describe("pane runtime", () => {
@@ -542,11 +541,34 @@ describe("pane runtime", () => {
     expect(pane.rawMode).toBe(false);
   });
 
-  it("setPaneView switches terminal <-> changes", () => {
+  it("openChanges / closeChanges / toggleChanges drive the app-level overlay (not a pane)", () => {
     const p1 = mkPane();
     resetStore({ workspaces: [mkWs({ id: "w1", tabs: [mkGroup([p1])] })], activeWs: "w1" });
-    useStore.getState().setPaneView(p1.id, "changes");
-    expect(findPane(useStore.getState(), p1.id)!.view).toBe("changes");
+    expect(useStore.getState().changesWsId).toBeNull();
+
+    useStore.getState().openChanges();
+    expect(useStore.getState().changesWsId).toBe("w1");
+
+    useStore.getState().closeChanges();
+    expect(useStore.getState().changesWsId).toBeNull();
+
+    useStore.getState().toggleChanges();
+    expect(useStore.getState().changesWsId).toBe("w1");
+    useStore.getState().toggleChanges();
+    expect(useStore.getState().changesWsId).toBeNull();
+  });
+
+  it("removeWorkspace clears a Changes overlay tied to the removed workspace", () => {
+    const p1 = mkPane();
+    const p2 = mkPane();
+    resetStore({
+      workspaces: [mkWs({ id: "w1", tabs: [mkGroup([p1])] }), mkWs({ id: "w2", tabs: [mkGroup([p2])] })],
+      activeWs: "w1",
+    });
+    useStore.getState().openChanges();
+    expect(useStore.getState().changesWsId).toBe("w1");
+    useStore.getState().removeWorkspace("w1");
+    expect(useStore.getState().changesWsId).toBeNull();
   });
 });
 

@@ -309,10 +309,10 @@ export function handleKeyDown(e: KeyboardEvent) {
       }
       return;
     }
-    if (k === "g" || k === "G") return void (e.preventDefault(), s.setPaneView(pane.id, "changes"));
+    if (k === "g" || k === "G") return void (e.preventDefault(), s.openChanges());
     if (k === "d" || k === "D") {
       e.preventDefault();
-      if (e.altKey) s.setPaneView(pane.id, pane.view === "changes" ? "terminal" : "changes");
+      if (e.altKey) s.toggleChanges();
       else {
         s.splitPane(e.shiftKey ? "v" : "h");
         focusRoot();
@@ -335,12 +335,12 @@ export function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // The Changes view owns its pane: app shortcuts (⌘…) already ran above; here we
-  // only let Esc drop back to the terminal and swallow every other key so neither
-  // the hidden prompt nor a full-screen program (rawMode) underneath is touched.
-  // Checked before the ⌃ block so control keys can't leak to the program behind it.
-  if (pane.view === "changes") {
-    if (k === "Escape") return void (e.preventDefault(), s.setPaneView(pane.id, "terminal"));
+  // The Changes overlay is up: app shortcuts (⌘…) already ran above; here we only
+  // let Esc close it and swallow every other key so neither the prompt nor a
+  // full-screen program (rawMode) painted behind the overlay is touched. Checked
+  // before the ⌃ block so control keys can't leak to the program behind it.
+  if (s.changesWsId) {
+    if (k === "Escape") return void (e.preventDefault(), s.closeChanges());
     return;
   }
 

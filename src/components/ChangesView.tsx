@@ -38,9 +38,9 @@ function baseOf(p: string): string {
 }
 const fileKey = (f: ChangedFile) => `${f.staged ? "s" : "u"}:${f.path}`;
 
-export function ChangesView({ paneId }: { paneId: number }) {
-  const ws = useStore((s) => s.workspaces.find((w) => w.tabs.some((g) => g.panes.some((p) => p.id === paneId))));
-  const setPaneView = useStore((s) => s.setPaneView);
+export function ChangesView({ wsId }: { wsId: string }) {
+  const ws = useStore((s) => s.workspaces.find((w) => w.id === wsId));
+  const closeChanges = useStore((s) => s.closeChanges);
   const setWsDiff = useStore((s) => s.setWsDiff);
 
   const [files, setFiles] = useState<ChangedFile[]>([]);
@@ -50,7 +50,6 @@ export function ChangesView({ paneId }: { paneId: number }) {
   const [mrBusy, setMrBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
-  const wsId = ws?.id ?? "";
   const dir = ws?.dir ?? "";
   const base = ws?.baseBranch ?? "";
   const branch = ws?.branch ?? "";
@@ -167,16 +166,20 @@ export function ChangesView({ paneId }: { paneId: number }) {
         <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderBottom: "1px solid var(--line)", fontFamily: "var(--sans)" }}>
           <span style={{ fontSize: 11, color: "var(--dim)" }}>Changes</span>
           <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--faint)" }}>
-            against <span style={{ color: "var(--acd)" }}>⎇ {base || "—"}</span>
+            {base ? (
+              <>against <span style={{ color: "var(--acd)" }}>⎇ {base}</span></>
+            ) : (
+              <span style={{ color: "var(--acd)" }}>working tree</span>
+            )}
           </span>
-          <span onClick={() => setPaneView(paneId, "terminal")} title="back to terminal (⌥⌘D)" style={{ cursor: "pointer", color: "var(--faint)", fontSize: 13 }}>
+          <span onClick={() => closeChanges()} title="close (Esc)" style={{ cursor: "pointer", color: "var(--faint)", fontSize: 13 }}>
             ⌗
           </span>
         </div>
         <div className="ascroll" style={{ flex: 1, overflowY: "auto", padding: "6px 6px 10px", minHeight: 0 }}>
           {files.length === 0 && (
             <div style={{ padding: "18px 12px", textAlign: "center", fontFamily: "var(--sans)", fontSize: 12, color: "var(--faint)" }}>
-              no changes against {base || "base"}
+              {base ? `no changes against ${base}` : "no uncommitted changes"}
             </div>
           )}
           {staged.length > 0 && (
@@ -237,7 +240,7 @@ export function ChangesView({ paneId }: { paneId: number }) {
             </div>
             {mode === "split" && (
               <div style={{ flex: "0 0 auto", display: "flex", fontFamily: "var(--sans)", fontSize: 10.5, color: "var(--faint)", borderBottom: "1px solid var(--line)" }}>
-                <span style={{ flex: 1, padding: "4px 12px", color: "var(--err)", borderRight: "1px solid var(--line)" }}>⎇ {base} · base</span>
+                <span style={{ flex: 1, padding: "4px 12px", color: "var(--err)", borderRight: "1px solid var(--line)" }}>⎇ {base || "HEAD"} · base</span>
                 <span style={{ flex: 1, padding: "4px 12px", color: "var(--ok)" }}>⎇ {branch || "working"} · working tree</span>
               </div>
             )}

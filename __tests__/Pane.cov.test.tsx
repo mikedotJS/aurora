@@ -40,7 +40,6 @@ function mkPane(overrides: Partial<PaneState> = {}): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: false,
     dirNames: [],
@@ -203,24 +202,9 @@ describe("Pane — multi-pane chrome and focus", () => {
   });
 });
 
-describe("Pane — changes view + find bar", () => {
-  it("renders ChangesView when pane.view is 'changes'", () => {
-    const pane = mkPane({ view: "changes" });
-    setup(pane);
-    const { container } = render(<Pane pane={pane} index={0} isActive multiple={false} />);
-    // ChangesView's own header text ("changes") should be present.
-    expect(container.textContent?.toLowerCase()).toContain("changes");
-  });
-
-  it("renders ChangesView even when a full-screen program runs (rawMode) — the view overlays the terminal", () => {
-    // Regression: the Changes view used to be gated on !rawMode, so switching to
-    // it while a full-screen program (claude, vim, less…) ran showed nothing.
-    const pane = mkPane({ view: "changes", rawMode: true });
-    setup(pane);
-    const { queryByTitle } = render(<Pane pane={pane} index={0} isActive multiple={false} />);
-    expect(queryByTitle("back to terminal (⌥⌘D)")).toBeTruthy();
-  });
-
+describe("Pane — find bar", () => {
+  // The Changes view is no longer a pane content mode — it's an app-level overlay
+  // rendered by PaneArea (see PaneGrid.cov.test.tsx). Pane never renders it.
   it("renders FindBar when find is open on the active pane", () => {
     const pane = mkPane({ blocks: [mkBlock({ output: "x\n" })] });
     setup(pane, { find: { open: true, query: "x", current: 0 } });

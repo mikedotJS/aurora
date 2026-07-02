@@ -28,7 +28,6 @@ function mkPane(overrides: Partial<PaneState> = {}): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: true,
     dirNames: [],

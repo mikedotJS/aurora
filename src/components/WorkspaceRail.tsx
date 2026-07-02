@@ -41,7 +41,7 @@ export function StatusDot({ ws, size = 7 }: { ws: Workspace; size?: number }) {
 // (a boolean), so the default shallow compare is correct.
 const WorkspaceCard = memo(function WorkspaceCard({ ws, active }: { ws: Workspace; active: boolean }) {
   const switchWorkspace = useStore((s) => s.switchWorkspace);
-  const setPaneView = useStore((s) => s.setPaneView);
+  const openChanges = useStore((s) => s.openChanges);
   const line = statusLine(ws);
   const offset = readOffset(ws.env);
   const showPortChip = Number.isFinite(offset);
@@ -81,12 +81,11 @@ const WorkspaceCard = memo(function WorkspaceCard({ ws, active }: { ws: Workspac
   // on worktree-backed cards — never the repo's main checkout or a manual lane.
   const showTrash = worktreeBacked && !isLast;
 
-  const openChanges = (e: React.MouseEvent) => {
+  const showChanges = (e: React.MouseEvent) => {
     e.stopPropagation();
     switchWorkspace(ws.id);
-    const w = useStore.getState().workspaces.find((x) => x.id === ws.id);
-    const p = w?.tabs[w.active]?.panes[w.tabs[w.active].active];
-    if (p) setPaneView(p.id, "changes");
+    // openChanges targets the (now) active workspace we just switched to.
+    openChanges();
   };
 
   // handleDelete is only reachable when showTrash (= worktreeBacked && !isLast) is true,
@@ -204,7 +203,7 @@ const WorkspaceCard = memo(function WorkspaceCard({ ws, active }: { ws: Workspac
         <span style={{ color: line.color, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>{line.text}</span>
         {ws.diff && (ws.diff.added > 0 || ws.diff.removed > 0) && (
           <span
-            onClick={openChanges}
+            onClick={showChanges}
             title="review changes"
             style={{ marginLeft: "auto", display: "inline-flex", gap: 6, cursor: "pointer", flexShrink: 0 }}
           >

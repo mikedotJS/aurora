@@ -4,6 +4,7 @@
 import { memo } from "react";
 import { useStore, type Group } from "../state/store";
 import { Pane } from "./Pane";
+import { ChangesView } from "./ChangesView";
 
 function gridShape(n: number, split: "h" | "v") {
   if (n <= 1) return { cols: 1, rows: 1 };
@@ -45,6 +46,7 @@ export function PaneArea() {
   // workspace switch; only the active workspace's active tab is visible.
   const workspaces = useStore((s) => s.workspaces);
   const activeWs = useStore((s) => s.activeWs);
+  const changesWsId = useStore((s) => s.changesWsId);
   return (
     <div style={{ flex: 1, minHeight: 0, position: "relative", background: "var(--page)" }}>
       {workspaces
@@ -54,6 +56,10 @@ export function PaneArea() {
             <GroupGrid key={group.id} group={group} visible={w.id === activeWs && gi === w.active} />
           )),
         )}
+      {/* Changes is a disjoint overlay over the whole pane grid — it never takes
+          a pane's place, so a dev server underneath keeps running untouched. Shown
+          only for the active workspace; switching away hides it (state kept). */}
+      {changesWsId && changesWsId === activeWs && <ChangesView wsId={changesWsId} />}
     </div>
   );
 }

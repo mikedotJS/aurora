@@ -29,7 +29,6 @@ function mkPane(overrides: Partial<PaneState> = {}): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "changes",
     exited: false,
     ready: false,
     dirNames: [],
@@ -100,9 +99,10 @@ afterEach(() => {
 describe("ChangesView — no matching workspace", () => {
   it("renders the empty state and does nothing on Open MR when no workspace owns the pane", async () => {
     // No workspace installed at all: ws lookup fails, dir/base/branch all fall back to "".
+    // With no base, the view compares against the working tree (not a base branch).
     useStore.setState({ workspaces: [], activeWs: null, initialized: true }, false);
-    const { container, getByText } = render(<ChangesView paneId={999} />);
-    await waitFor(() => expect(container.textContent).toContain("no changes against"));
+    const { container, getByText } = render(<ChangesView wsId="none" />);
+    await waitFor(() => expect(container.textContent).toContain("no uncommitted changes"));
     expect(container.textContent).toContain("select a file to view its diff");
     fireEvent.click(getByText("⇋ Open MR"));
     // branch is "" -> onOpenMr returns early; no glab_mr_create call.
@@ -115,7 +115,7 @@ describe("ChangesView — empty changes", () => {
     const pane = mkPane();
     setup(pane, { baseBranch: "develop" });
     tauri.invoke({ git_changed_files: () => [] });
-    const { container } = render(<ChangesView paneId={pane.id} />);
+    const { container } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(container.textContent).toContain("no changes against develop"));
     expect(container.textContent).toContain("select a file to view its diff");
   });
@@ -135,7 +135,7 @@ describe("ChangesView — file list & selection", () => {
       git_diff_file: () => UNIFIED_DIFF,
       git_status_summary: () => ({ files: 3, added: 7, removed: 4, conflicted: 0 }),
     });
-    const { container, getByText } = render(<ChangesView paneId={pane.id} />);
+    const { container, getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(container.textContent).toContain("Staged · 1"));
     expect(container.textContent).toContain("Changes · 2");
     expect(container.textContent).toContain("a.ts");
@@ -159,7 +159,7 @@ describe("ChangesView — file list & selection", () => {
     setup(pane);
     const files: ChangedFile[] = [mkFile({ path: "a.ts", staged: true }), mkFile({ path: "b.ts", staged: false, status: "M" })];
     tauri.invoke({ git_changed_files: () => files, git_diff_file: () => UNIFIED_DIFF });
-    const { getByText } = render(<ChangesView paneId={pane.id} />);
+    const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("b.ts")).toBeTruthy());
     fireEvent.click(getByText("b.ts"));
     await waitFor(() => expect(tauri.lastCall("git_diff_file")?.args).toMatchObject({ path: "b.ts", mode: "worktree" }));
@@ -172,7 +172,7 @@ describe("ChangesView — file list & selection", () => {
       git_changed_files: () => [mkFile({ path: "new.ts", status: "?", staged: false })],
       git_diff_file: () => "",
     });
-    const { container } = render(<ChangesView paneId={pane.id} />);
+    const { container } = render(<ChangesView wsId={"w-" + pane.id} />);
     // "new.ts" appears both in the file-list row and the auto-selected diff header.
     await waitFor(() => expect(container.textContent).toContain("new.ts"));
     await waitFor(() => expect(tauri.lastCall("git_diff_file")?.args).toMatchObject({ mode: "worktree" }));
@@ -189,7 +189,7 @@ describe("ChangesView — diff pane states", () => {
       git_changed_files: () => [mkFile({ path: "img.png" })],
       git_diff_file: () => "Binary files a/img.png and b/img.png differ",
     });
-    render(<ChangesView paneId={pane.id} />);
+    render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(document.body.textContent).toContain("Binary file — no text diff."));
   });
 
@@ -200,7 +200,7 @@ describe("ChangesView — diff pane states", () => {
       git_changed_files: () => [mkFile({ path: "same.ts", status: "M" })],
       git_diff_file: () => "",
     });
-    render(<ChangesView paneId={pane.id} />);
+    render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(document.body.textContent).toContain("No textual changes."));
   });
 
@@ -208,7 +208,7 @@ describe("ChangesView — diff pane states", () => {
     const pane = mkPane();
     setup(pane, { baseBranch: "main", branch: "feature/x" });
     tauri.invoke({ git_changed_files: () => [mkFile({ path: "a.ts" })], git_diff_file: () => UNIFIED_DIFF });
-    const { getByText, container } = render(<ChangesView paneId={pane.id} />);
+    const { getByText, container } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(container.textContent).toContain("new line"));
     expect(container.textContent).toContain("old line");
     // switch to split
@@ -225,7 +225,7 @@ describe("ChangesView — diff pane states", () => {
     const pane = mkPane();
     setup(pane, { branch: null });
     tauri.invoke({ git_changed_files: () => [mkFile({ path: "a.ts" })], git_diff_file: () => UNIFIED_DIFF });
-    const { getByText, container } = render(<ChangesView paneId={pane.id} />);
+    const { getByText, container } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(container.textContent).toContain("new line"));
     fireEvent.click(getByText("Split"));
     await waitFor(() => expect(container.textContent).toContain("⎇ working · working tree"));
@@ -245,7 +245,7 @@ describe("ChangesView — stage / unstage / discard / stage-all", () => {
         return undefined;
       },
     });
-    const { getByText, container } = render(<ChangesView paneId={pane.id} />);
+    const { getByText, container } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("Unstage")).toBeTruthy());
     fireEvent.click(getByText("Unstage"));
     await waitFor(() => expect(tauri.lastCall("git_unstage")?.args).toMatchObject({ dir: "/repo", path: "a.ts" }));
@@ -266,7 +266,7 @@ describe("ChangesView — stage / unstage / discard / stage-all", () => {
         return undefined;
       },
     });
-    const { getByText } = render(<ChangesView paneId={pane.id} />);
+    const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("Stage")).toBeTruthy());
     fireEvent.click(getByText("Stage"));
     await waitFor(() => expect(tauri.lastCall("git_stage")?.args).toMatchObject({ dir: "/repo", path: "a.ts" }));
@@ -281,7 +281,7 @@ describe("ChangesView — stage / unstage / discard / stage-all", () => {
       git_diff_file: () => "",
       git_stage_all: () => undefined,
     });
-    const { getByText } = render(<ChangesView paneId={pane.id} />);
+    const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("Stage all")).toBeTruthy());
     fireEvent.click(getByText("Stage all"));
     await waitFor(() => expect(tauri.calls().some((c) => c.cmd === "git_stage_all" && c.args.dir === "/repo")).toBe(true));
@@ -298,7 +298,7 @@ describe("ChangesView — stage / unstage / discard / stage-all", () => {
     const originalConfirm = window.confirm;
     window.confirm = () => true;
     try {
-      const { getByText } = render(<ChangesView paneId={pane.id} />);
+      const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
       await waitFor(() => expect(getByText("Discard")).toBeTruthy());
       fireEvent.click(getByText("Discard"));
       await waitFor(() => expect(tauri.lastCall("git_discard")).toBeTruthy());
@@ -319,7 +319,7 @@ describe("ChangesView — stage / unstage / discard / stage-all", () => {
     const originalConfirm = window.confirm;
     window.confirm = () => true;
     try {
-      const { getByText } = render(<ChangesView paneId={pane.id} />);
+      const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
       await waitFor(() => expect(getByText("Discard")).toBeTruthy());
       fireEvent.click(getByText("Discard"));
       await waitFor(() => expect(tauri.lastCall("git_discard")?.args).toMatchObject({ path: "new.ts", untracked: true }));
@@ -339,7 +339,7 @@ describe("ChangesView — stage / unstage / discard / stage-all", () => {
     const originalConfirm = window.confirm;
     window.confirm = () => false;
     try {
-      const { getByText } = render(<ChangesView paneId={pane.id} />);
+      const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
       await waitFor(() => expect(getByText("Discard")).toBeTruthy());
       fireEvent.click(getByText("Discard"));
       // give any microtasks a chance to run, then assert git_discard was never called
@@ -361,7 +361,7 @@ describe("ChangesView — Open MR", () => {
       git_changed_files: () => [],
       glab_mr_create: () => gate,
     });
-    const { getByText, queryByText } = render(<ChangesView paneId={pane.id} />);
+    const { getByText, queryByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("⇋ Open MR")).toBeTruthy());
     fireEvent.click(getByText("⇋ Open MR"));
     await waitFor(() => expect(queryByText("⇋ Opening…")).toBeTruthy());
@@ -379,7 +379,7 @@ describe("ChangesView — Open MR", () => {
         throw new Error("remote rejected the push");
       },
     });
-    const { getByText, container } = render(<ChangesView paneId={pane.id} />);
+    const { getByText, container } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("⇋ Open MR")).toBeTruthy());
     fireEvent.click(getByText("⇋ Open MR"));
     await waitFor(() => expect(container.textContent).toContain("remote rejected the push"));
@@ -394,7 +394,7 @@ describe("ChangesView — Open MR", () => {
         throw new Error("glab-not-found: command missing");
       },
     });
-    const { getByText, container } = render(<ChangesView paneId={pane.id} />);
+    const { getByText, container } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("⇋ Open MR")).toBeTruthy());
     fireEvent.click(getByText("⇋ Open MR"));
     await waitFor(() => expect(container.textContent).toContain("GitLab CLI (glab) not found."));
@@ -404,7 +404,7 @@ describe("ChangesView — Open MR", () => {
     const pane = mkPane();
     setup(pane, { branch: "feature/x", mr: { iid: 1, state: "open", url: "https://gitlab.example/mr/1" } });
     tauri.invoke({ git_changed_files: () => [] });
-    const { getByText } = render(<ChangesView paneId={pane.id} />);
+    const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("⇋ Open MR")).toBeTruthy());
     fireEvent.click(getByText("⇋ Open MR"));
     // glab_mr_create must never be invoked when an MR already exists.
@@ -416,7 +416,7 @@ describe("ChangesView — Open MR", () => {
     const pane = mkPane();
     setup(pane, { branch: null, mr: null });
     tauri.invoke({ git_changed_files: () => [] });
-    const { getByText } = render(<ChangesView paneId={pane.id} />);
+    const { getByText } = render(<ChangesView wsId={"w-" + pane.id} />);
     await waitFor(() => expect(getByText("⇋ Open MR")).toBeTruthy());
     fireEvent.click(getByText("⇋ Open MR"));
     await waitFor(() => expect(tauri.calls().some((c) => c.cmd === "git_changed_files")).toBe(true));
@@ -424,17 +424,14 @@ describe("ChangesView — Open MR", () => {
   });
 });
 
-describe("ChangesView — back-to-terminal control", () => {
-  it("switches the pane's view back to 'terminal' via the ⌗ control", async () => {
-    const pane = mkPane({ view: "changes" });
-    setup(pane);
+describe("ChangesView — close control", () => {
+  it("closes the overlay (clears changesWsId) via the ⌗ control", async () => {
+    const pane = mkPane();
+    const ws = setup(pane);
+    useStore.getState().openChanges();
     tauri.invoke({ git_changed_files: () => [] });
-    const { getByTitle } = render(<ChangesView paneId={pane.id} />);
-    const back = getByTitle("back to terminal (⌥⌘D)");
-    fireEvent.click(back);
-    await waitFor(() => {
-      const p = useStore.getState().workspaces.flatMap((w) => w.tabs.flatMap((g) => g.panes)).find((pp) => pp.id === pane.id);
-      expect(p?.view).toBe("terminal");
-    });
+    const { getByTitle } = render(<ChangesView wsId={ws.id} />);
+    fireEvent.click(getByTitle("close (Esc)"));
+    await waitFor(() => expect(useStore.getState().changesWsId).toBeNull());
   });
 });

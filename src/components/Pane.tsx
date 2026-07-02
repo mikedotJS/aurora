@@ -5,7 +5,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from "react";
 import { Terminal } from "./Terminal";
 import { FindBar } from "./FindBar";
-import { ChangesView } from "./ChangesView";
 import { useStore, type PaneState, type Block } from "../state/store";
 import { shortenCwd } from "../lib/sys";
 import { blockLines, collectMatches, findRangesInLine, highlightLine, lineText, type Match } from "../lib/find";
@@ -181,11 +180,6 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
       )}
 
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {/* The Changes view is an overlay that takes priority over the pane's
-            terminal — it must paint even when a full-screen program is running
-            (rawMode), otherwise switching to it (chip / ⌘G) would silently do
-            nothing. ChangesView sits above the xterm via its own z-index. */}
-        {pane.view === "changes" && <ChangesView paneId={pane.id} />}
         {isActive && find.open && !pane.rawMode && <FindBar total={matches.length} index={curIdx} />}
         {/* scrollback: blocks + live prompt */}
         <div

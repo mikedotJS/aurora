@@ -109,9 +109,6 @@ export interface Notif {
   ts: number;
 }
 
-/** A pane's content mode: the live terminal, or the Changes (diff) view. */
-export type PaneView = "terminal" | "changes";
-
 export interface PaneState {
   id: number;
   ptyId: string | null;
@@ -131,7 +128,6 @@ export interface PaneState {
   completion: Completion | null;
   inputSelected: boolean;
   rawMode: boolean;
-  view: PaneView;
   exited: boolean;
   ready: boolean;
   dirNames: string[];
@@ -263,6 +259,9 @@ export interface StoreState {
   keyError: string | null;
   settingsOpen: boolean;
   panel: PanelKind;
+  /** Workspace id whose Changes overlay is open; null = closed. The overlay
+   *  renders over that workspace's pane grid — it never occupies a pane. */
+  changesWsId: string | null;
   userScripts: Record<string, RepoScripts>;
   /** Per-repo workspace config (presets and defaults), keyed by repo root. */
   repoConfigs: Record<string, RepoConfig>;
@@ -309,7 +308,11 @@ export interface StoreState {
   markExited: (paneId: number) => void;
   /** Tear down + respawn a pane's shell (self-heal a lost spawn / manual restart). */
   respawnPane: (paneId: number) => void;
-  setPaneView: (paneId: number, view: PaneView) => void;
+  /** Changes overlay: open it for the active workspace, close it, or toggle.
+   *  It's a disjoint view over the pane grid — it never replaces a pane. */
+  openChanges: () => void;
+  closeChanges: () => void;
+  toggleChanges: () => void;
   // server tab (workspace-run-servers)
   /**
    * Create (or replace) the dedicated "Servers" tab for a workspace.
@@ -448,7 +451,6 @@ function newPane(cwd: string, repoRoot: string | null = null): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: false,
     dirNames: [],
@@ -618,6 +620,7 @@ export const useStore = create<StoreState>((set, get) => ({
   keyError: null,
   settingsOpen: false,
   panel: null,
+  changesWsId: null,
   userScripts: {},
   repoConfigs: {},
   workspaceSettingsRepo: null,
@@ -742,7 +745,9 @@ export const useStore = create<StoreState>((set, get) => ({
       const activeWs =
         s.activeWs === id ? workspaces[Math.min(idx, workspaces.length - 1)].id : s.activeWs;
       savePersisted(workspaces, activeWs);
-      return { workspaces, activeWs };
+      // Drop a stale Changes overlay tied to the removed workspace.
+      const changesWsId = s.changesWsId === id ? null : s.changesWsId;
+      return { workspaces, activeWs, changesWsId };
     }),
 
   setWsDiff: (id, diff) =>
@@ -794,8 +799,9 @@ export const useStore = create<StoreState>((set, get) => ({
       };
     }),
 
-  setPaneView: (paneId, view) =>
-    set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { view }) })),
+  openChanges: () => set((s) => (s.activeWs ? { changesWsId: s.activeWs } : {})),
+  closeChanges: () => set({ changesWsId: null }),
+  toggleChanges: () => set((s) => ({ changesWsId: s.changesWsId ? null : s.activeWs })),
 
   prepareServerTab: (wsId, n) =>
     set((s) => {

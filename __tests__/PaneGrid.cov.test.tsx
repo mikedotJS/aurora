@@ -28,7 +28,6 @@ function mkPane(overrides: Partial<PaneState> = {}): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: false,
     dirNames: [],
@@ -78,6 +77,7 @@ function resetStore() {
     {
       workspaces: [],
       activeWs: null,
+      changesWsId: null,
       initialized: true,
       home: "/Users/test",
       keyEntry: false,
@@ -185,5 +185,33 @@ describe("PaneArea — mounted filtering and active-tab visibility", () => {
     useStore.setState({ workspaces: [], activeWs: null }, false);
     const { container } = render(<PaneArea />);
     expect(gridDivs(container).length).toBe(0);
+  });
+});
+
+describe("PaneArea — Changes overlay (disjoint, never takes a pane)", () => {
+  it("renders the Changes overlay over the grid when changesWsId matches the active workspace", () => {
+    const ws = mkWorkspace([mkGroup(1, "h")]);
+    useStore.setState({ workspaces: [ws], activeWs: ws.id, changesWsId: ws.id }, false);
+    const { queryByTitle, container } = render(<PaneArea />);
+    // The overlay's close affordance proves ChangesView mounted…
+    expect(queryByTitle("close (Esc)")).toBeTruthy();
+    // …and the pane grid is still present underneath (overlay, not replacement).
+    expect(gridDivs(container).length).toBe(1);
+  });
+
+  it("does not render the overlay when changesWsId is null", () => {
+    const ws = mkWorkspace([mkGroup(1, "h")]);
+    useStore.setState({ workspaces: [ws], activeWs: ws.id, changesWsId: null }, false);
+    const { queryByTitle } = render(<PaneArea />);
+    expect(queryByTitle("close (Esc)")).toBeNull();
+  });
+
+  it("does not render the overlay for a non-active workspace (switching away hides it)", () => {
+    const wsA = mkWorkspace([mkGroup(1, "h")]);
+    const wsB = mkWorkspace([mkGroup(1, "h")]);
+    // changesWsId points at A, but B is active → overlay stays hidden.
+    useStore.setState({ workspaces: [wsA, wsB], activeWs: wsB.id, changesWsId: wsA.id }, false);
+    const { queryByTitle } = render(<PaneArea />);
+    expect(queryByTitle("close (Esc)")).toBeNull();
   });
 });

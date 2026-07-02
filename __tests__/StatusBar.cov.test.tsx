@@ -26,7 +26,6 @@ function mkPane(overrides: Partial<PaneState> = {}): PaneState {
     completion: null,
     inputSelected: false,
     rawMode: false,
-    view: "terminal",
     exited: false,
     ready: false,
     dirNames: [],
@@ -149,7 +148,7 @@ describe("StatusBar — diff summary", () => {
     expect(chip.textContent).toContain("Changes");
     expect(chip.textContent).not.toContain("changed");
     fireEvent.click(chip);
-    expect(useStore.getState().workspaces[0].tabs[0].panes[0].view).toBe("changes");
+    expect(useStore.getState().changesWsId).toBe(ws.id);
   });
 
   it("shows a clickable 'Changes' control even when the diff summary is null (never populated)", () => {
@@ -160,7 +159,7 @@ describe("StatusBar — diff summary", () => {
     const chip = getByTitle("review changes (⌘G)");
     expect(chip.textContent).toContain("Changes");
     fireEvent.click(chip);
-    expect(useStore.getState().workspaces[0].tabs[0].panes[0].view).toBe("changes");
+    expect(useStore.getState().changesWsId).toBe(ws.id);
   });
 
   it("hides the Changes control only when there is no active pane", () => {
@@ -169,7 +168,7 @@ describe("StatusBar — diff summary", () => {
     expect(queryByTitle("review changes (⌘G)")).toBeNull();
   });
 
-  it("shows +added only when removed is 0, and clicking switches the pane to the Changes view", () => {
+  it("shows +added only when removed is 0, and clicking opens the Changes overlay", () => {
     const pane = mkPane();
     const ws = mkWorkspace([mkGroup({ panes: [pane] })], { diff: { files: 3, added: 5, removed: 0, conflicted: 0 } });
     seed({ workspaces: [ws], activeWs: ws.id });
@@ -179,8 +178,7 @@ describe("StatusBar — diff summary", () => {
     expect(chip.textContent).toContain("+5");
     expect(chip.textContent).not.toContain("−");
     fireEvent.click(chip);
-    const updatedPane = useStore.getState().workspaces[0].tabs[0].panes[0];
-    expect(updatedPane.view).toBe("changes");
+    expect(useStore.getState().changesWsId).toBe(ws.id);
   });
 
   it("shows -removed only when added is 0", () => {

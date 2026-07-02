@@ -13,7 +13,7 @@ export function StatusBar() {
   const active = useStore((s) => activeWorkspace(s)?.active ?? 0);
   const diff = useStore((s) => activeWorkspace(s)?.diff ?? null);
   const openPanel = useStore((s) => s.openPanel);
-  const setPaneView = useStore((s) => s.setPaneView);
+  const openChanges = useStore((s) => s.openChanges);
   const userScripts = useStore((s) => s.userScripts);
   const repoMrs = useStore((s) => s.repoMrs);
   const unseen = useStore((s) => s.unseen);
@@ -63,7 +63,7 @@ export function StatusBar() {
             counts when a summary exists, or a plain "Changes" label otherwise. */}
         {pane && (
           <span
-            onClick={() => setPaneView(pane.id, "changes")}
+            onClick={() => openChanges()}
             title="review changes (⌘G)"
             style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
           >
