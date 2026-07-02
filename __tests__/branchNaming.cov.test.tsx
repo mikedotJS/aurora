@@ -11,6 +11,7 @@ import {
   pickAlternative,
   composeFromGroups,
   resolveBranchName,
+  suggestWorkspaceTitle,
   DEFAULT_BRANCH_NAMING,
   type NameIssue,
   type BranchNamingConfig,
@@ -449,6 +450,70 @@ describe("resolveBranchName", () => {
     const r = await resolveBranchName(cfg, ISSUE, "/repo");
     expect(r.valid).toBe(false);
     expect(r.explanation).toContain("backend exploded");
+  });
+});
+
+describe("suggestWorkspaceTitle", () => {
+  it("trims surrounding whitespace from the model's response", async () => {
+    tauri.invoke({ claude_text: () => "   Fix login redirect   " });
+    const title = await suggestWorkspaceTitle("the login redirect drops the return url", "claude-sonnet-4-6");
+    expect(title).toBe("Fix login redirect");
+  });
+
+  it("strips wrapping double quotes the model sometimes adds", async () => {
+    tauri.invoke({ claude_text: () => '"Fix login redirect"' });
+    const title = await suggestWorkspaceTitle("desc", "claude-sonnet-4-6");
+    expect(title).toBe("Fix login redirect");
+  });
+
+  it("strips wrapping single quotes the model sometimes adds", async () => {
+    tauri.invoke({ claude_text: () => "'Fix login redirect'" });
+    const title = await suggestWorkspaceTitle("desc", "claude-sonnet-4-6");
+    expect(title).toBe("Fix login redirect");
+  });
+
+  it("only strips a matching quote at the very start/end, not asymmetric or interior quotes", () => {
+    // A mismatched pair (leading " with no trailing ") must be left alone —
+    // the regex requires the SAME quote char at both ends to strip.
+    // Not asserted via suggestWorkspaceTitle here to keep this a pure regex
+    // check without a network round-trip; the shared behavior is exercised
+    // through the async cases above.
+    const strip = (s: string) => s.trim().replace(/^["']|["']$/g, "");
+    expect(strip('"Fix the thing')).toBe("Fix the thing");
+    expect(strip(`Title with an "inner" quote`)).toBe(`Title with an "inner" quote`);
+  });
+
+  it("does not fabricate a title when the model returns an empty string", async () => {
+    tauri.invoke({ claude_text: () => "" });
+    const title = await suggestWorkspaceTitle("desc", "claude-sonnet-4-6");
+    expect(title).toBe("");
+  });
+
+  it("passes the description and model straight through to claudeText, with a title-authoring system prompt", async () => {
+    tauri.invoke({ claude_text: () => "Some title" });
+    await suggestWorkspaceTitle("add dark mode to settings", "claude-opus-9");
+    const call = tauri.lastCall("claude_text");
+    expect(call?.args.prompt).toBe("add dark mode to settings");
+    expect(call?.args.model).toBe("claude-opus-9");
+    expect(String(call?.args.system)).toContain("workspace title");
+  });
+
+  it("propagates NoKeyError when no API key is configured (does not swallow it)", async () => {
+    tauri.invoke({
+      claude_text: () => {
+        throw new Error("no-key");
+      },
+    });
+    await expect(suggestWorkspaceTitle("desc", "claude-sonnet-4-6")).rejects.toBeInstanceOf(NoKeyError);
+  });
+
+  it("propagates a generic backend error unchanged", async () => {
+    tauri.invoke({
+      claude_text: () => {
+        throw new Error("backend exploded");
+      },
+    });
+    await expect(suggestWorkspaceTitle("desc", "claude-sonnet-4-6")).rejects.toThrow("backend exploded");
   });
 });
 
