@@ -285,3 +285,28 @@ export async function waitForText(text: string, timeout = 15_000): Promise<void>
 export async function expectNoText(text: string): Promise<void> {
   if (await bodyHasText(text)) throw new Error(`unexpected text present: "${text}"`);
 }
+
+/**
+ * Type text into Aurora's own prompt (NOT a real `<input>` — `Pane.tsx` renders
+ * `pane.input` as plain text and `keymap.ts`'s `window` `keydown` listener
+ * builds it up one `KeyboardEvent.key.length === 1` char at a time, same as any
+ * other single-char key branch — see `handleKeyDown`'s final `if (k.length ===
+ * 1 && !e.altKey)` case). So typing here means dispatching one synthetic
+ * `keydown` per character, not `typeInReactInput` (H-5b, which is for real DOM
+ * inputs) and not `browser.keys()` (H-5, dropped — no reliable OS focus in this
+ * harness).
+ *
+ * H-6 caveat: dispatching each char via a SEPARATE `dispatchKey()`/
+ * `browser.execute()` round trip pays the ~5-6s `beforeCommand`/
+ * `get_window_states` tax PER CHARACTER (a 9-char command would cost
+ * 45-55s just to type) — dispatches the whole string's keydown events in
+ * ONE `browser.execute()` call instead, paying that tax once regardless of
+ * string length.
+ */
+export async function typeInPane(text: string): Promise<void> {
+  await browser.execute((s) => {
+    for (const ch of s) {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true, cancelable: true }));
+    }
+  }, text);
+}
