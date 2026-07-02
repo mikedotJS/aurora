@@ -90,12 +90,17 @@ export interface HookInfo {
 
 export interface GitlabMr {
   iid: number;
+  project_id: number;
   title: string;
   branch: string;
   draft: boolean;
   author: string;
   web_url: string;
   updated: string;
+  /** `user_notes_count` — comments on the MR; drives "new comment" notifs. */
+  notes: number;
+  /** Head commit sha — a change between polls means new commits were pushed. */
+  sha: string;
 }
 
 export interface Notif {
