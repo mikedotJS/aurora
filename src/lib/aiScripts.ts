@@ -28,7 +28,8 @@ const MANIFESTS: { name: string; cap: number }[] = [
 ];
 
 // Lockfiles → package manager. Only their PRESENCE is used; bodies are never read.
-const LOCKFILES: Record<string, string> = {
+// Exported so `projectContext.ts` reuses the same map instead of duplicating it.
+export const LOCKFILES: Record<string, string> = {
   "bun.lockb": "bun",
   "pnpm-lock.yaml": "pnpm",
   "yarn.lock": "yarn",

@@ -8,6 +8,7 @@ import { claudeSuggest, NoKeyError } from "../ai/suggest";
 import { typoFix, isInteractive, splitPathToken, folderCandidates, commonPrefix, type PathToken } from "./commands";
 import { keySet, keyDelete } from "./keychain";
 import { resolveCd, listDir } from "./sys";
+import { gatherProjectContext, formatProjectContext } from "./projectContext";
 import { runScript } from "./scripts";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
@@ -77,7 +78,16 @@ async function askClaude(pane: PaneState, text: string) {
   const s = useStore.getState();
   s.setSuggestionLoading(pane.id, true);
   try {
-    const sug = await claudeSuggest(text, pane.cwd, s.settings.model);
+    // Best-effort repo context (toolchain, real scripts/targets, git state) so
+    // the suggestion matches the repo instead of guessing `npm`. Detection
+    // failure is non-fatal — fall back to the context-free call below.
+    let context: string | undefined;
+    try {
+      context = formatProjectContext(await gatherProjectContext(pane.cwd)) || undefined;
+    } catch {
+      context = undefined;
+    }
+    const sug = await claudeSuggest(text, pane.cwd, s.settings.model, context);
     s.setSuggestion(pane.id, sug);
   } catch (e) {
     if (e instanceof NoKeyError) {

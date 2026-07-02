@@ -22,6 +22,25 @@ describe("claudeSuggest", () => {
     });
   });
 
+  it("forwards an optional context string to claude_suggest", async () => {
+    const sugg: Suggestion = { command: "pnpm build", note: "build it" };
+    tauri.invoke({ claude_suggest: () => sugg });
+    const r = await claudeSuggest("build it", "/repo", "claude-sonnet-4-6", "Toolchain: package manager: pnpm");
+    expect(r).toEqual(sugg);
+    expect(tauri.lastCall("claude_suggest")?.args).toEqual({
+      prompt: "build it",
+      cwd: "/repo",
+      model: "claude-sonnet-4-6",
+      context: "Toolchain: package manager: pnpm",
+    });
+  });
+
+  it("omits context (undefined) when the caller doesn't pass one", async () => {
+    tauri.invoke({ claude_suggest: () => ({ command: "ls", note: "ok" }) });
+    await claudeSuggest("list files", "/repo", "m");
+    expect(tauri.lastCall("claude_suggest")?.args.context).toBeUndefined();
+  });
+
   it("throws NoKeyError when the backend reports no-key", async () => {
     tauri.invoke({
       claude_suggest: () => {
