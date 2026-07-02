@@ -337,13 +337,27 @@ export function handleKeyDown(e: KeyboardEvent) {
 
   // ⌘, / ⌘K / ⌘B need no active pane (openSettings/openCommand/toggleRail don't
   // touch the pane) — handle them here, above the active-pane bail below, so they
-  // keep working in the empty-startup state (no workspace/pane yet: the EmptyState
-  // "Create a workspace" affordance advertises ⌘K). Handled here, they're removed
-  // from the pane-dependent ⌘ block further down to avoid a double dispatch.
+  // stay reachable even if `activeWs` is ever null (defensive: `init` always
+  // resolves to a live workspace via the Home terminal, but the rail's own
+  // "Create a workspace" affordance still advertises ⌘K). Handled here, they're
+  // removed from the pane-dependent ⌘ block further down to avoid a double dispatch.
   if (e.metaKey) {
     if (k === ",") return void (e.preventDefault(), s.openSettings());
     if (k === "k" || k === "K") return void (e.preventDefault(), s.openCommand());
     if (k === "b" || k === "B") return void (e.preventDefault(), s.toggleRail());
+    // ⌘0 — jump to the Home terminal (~), regardless of whether a pane is active.
+    // Match the physical Digit0 key (e.code), not just the produced char (e.key):
+    // on AZERTY the top row is unshifted à/é/"/… so ⌘+0 would otherwise demand ⌘⇧0.
+    // e.code === "Digit0" fires on ⌘ + the 0 key with no Shift, on every layout.
+    if (k === "0" || e.code === "Digit0") {
+      e.preventDefault();
+      const home = s.workspaces.find((w) => w.kind === "home");
+      if (home) {
+        s.switchWorkspace(home.id);
+        focusRoot();
+      }
+      return;
+    }
   }
 
   const pane = activePane(s);

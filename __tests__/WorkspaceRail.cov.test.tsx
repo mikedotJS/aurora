@@ -112,6 +112,7 @@ function makeWorkspace(overrides: Record<string, unknown> = {}): Workspace {
   const group = makeGroup({ panes: [pane] });
   return {
     id,
+    kind: "workspace",
     repoId: null,
     title: "Workspace",
     issueKey: null,
@@ -221,10 +222,79 @@ describe("StatusDot", () => {
 // ── WorkspaceRail: empty states + repo groups ──────────────────────────────
 
 describe("WorkspaceRail — empty & repo groups", () => {
-  it("shows 'no workspaces yet' with zero repos/workspaces and no filter", () => {
+  it("shows the add-repository onboarding as a primary CTA with zero repos/workspaces and no filter", () => {
     seed();
-    const { container } = render(<WorkspaceRail />);
-    expect(container.textContent).toContain("no workspaces yet");
+    const { container, getByLabelText } = render(<WorkspaceRail />);
+    // The onboarding *is* the primary CTA now (accent .aurora-empty-primary),
+    // anchored on a stable aria-label rather than prose. A short title sits above
+    // it and a faint shell-voiced reassurance line sits below.
+    const cta = getByLabelText("Add repository");
+    expect(cta.className).toContain("aurora-empty-primary");
+    expect(cta.className).toContain("aurora-rail-empty-cta");
+    expect(container.querySelector(".aurora-rail-empty-title")?.textContent).toBe("Start with a repository");
+    expect(container.textContent).toContain("the ~ shell is always one click away");
+    // The prose the user disliked is gone.
+    expect(container.textContent).not.toContain("no repositories yet");
+    expect(container.textContent).not.toContain("below to begin");
+  });
+
+  it("in the zero-repo onboarding, the footer's duplicate 'Add repository' control is hidden (single CTA)", () => {
+    seed();
+    const { container, getAllByLabelText } = render(<WorkspaceRail />);
+    // Exactly one Add-repository control while empty: the primary CTA. The footer
+    // control (distinct title="add another repository folder") is not rendered.
+    expect(container.querySelector('[title="add another repository folder"]')).toBeNull();
+    expect(getAllByLabelText("Add repository")).toHaveLength(1);
+  });
+
+  it("clicking the onboarding CTA calls addRepoFromFolder and shows 'Opening…' while busy", async () => {
+    let resolveAdd!: (v: unknown) => void;
+    addRepoImpl = () => new Promise((res) => (resolveAdd = res));
+    seed();
+    const { getByLabelText } = render(<WorkspaceRail />);
+    const cta = getByLabelText("Add repository") as HTMLButtonElement;
+    fireEvent.click(cta);
+    await flush();
+    expect(addRepoCalls).toBe(1);
+    expect(cta.textContent).toContain("Opening…");
+    expect(cta.disabled).toBe(true);
+    resolveAdd({ cancelled: true });
+    await flush();
+    expect(cta.textContent).toContain("Add repository");
+  });
+
+  it("shows the add-repo error in the onboarding CTA slot (replacing the shell hint) on ok:false", async () => {
+    addRepoImpl = () => Promise.resolve({ ok: false, error: "That folder isn't inside a git repository." });
+    seed();
+    const { container, getByLabelText } = render(<WorkspaceRail />);
+    fireEvent.click(getByLabelText("Add repository"));
+    await flush();
+    const err = container.querySelector(".aurora-rail-empty-error");
+    expect(err?.textContent).toContain("That folder isn't inside a git repository.");
+    // The reassurance hint yields its slot to the error.
+    expect(container.querySelector(".aurora-rail-empty-hint")).toBeNull();
+  });
+
+  it("does not offer 'Create a workspace' in onboarding when no repos are known", () => {
+    seed();
+    const { queryByText } = render(<WorkspaceRail />);
+    expect(queryByText("Create a workspace")).toBeNull();
+  });
+
+  it("a registered repo with zero workspaces renders its own empty-group row instead of onboarding (groups.length > 0)", () => {
+    // NOTE: every known repo always gets its own group entry (the "every known
+    // repo in order" loop pushes unconditionally when there's no active filter),
+    // so `groups.length` is never 0 while `repos.length > 0` outside a filter —
+    // the onboarding's "Create a workspace" branch is reachable only in the
+    // filtered-to-nothing case, which task 4.5 explicitly keeps on the
+    // "no workspace matches" message instead. This test documents the actual,
+    // reachable behavior rather than asserting the unreachable branch.
+    const repo = { id: "/r1", root: "/r1", name: "repo-one", defaultBranch: "main" };
+    seed({ repos: [repo] });
+    const { container, getByText } = render(<WorkspaceRail />);
+    // No zero-repo onboarding CTA when a repo group exists.
+    expect(container.querySelector(".aurora-rail-empty")).toBeNull();
+    expect(getByText("+ New workspace in repo-one")).toBeTruthy();
   });
 
   it("shows 'no workspace matches' when filtered to nothing", () => {
@@ -263,6 +333,43 @@ describe("WorkspaceRail — empty & repo groups", () => {
     const { container } = render(<WorkspaceRail />);
     expect(container.textContent).toContain("local");
     expect(container.querySelector('[title="repo settings"]')).toBeNull();
+  });
+
+  it("the Home terminal is excluded from every repo group and from the local bucket, and never renders in the rail", () => {
+    const repo = { id: "/r1", root: "/r1", name: "repo-one", defaultBranch: "main" };
+    const home = makeWorkspace({ id: "home", kind: "home", repoId: null, title: "Home", dir: "/Users/tester" });
+    const repoWs = makeWorkspace({ id: "wrepo", repoId: "/r1", title: "repo workspace" });
+    const manual = makeWorkspace({ id: "wlocal", repoId: null, title: "manual lane" });
+    seed({ repos: [repo], workspaces: [home, repoWs, manual], activeWs: "wrepo" });
+    const { container, getByText, queryByLabelText } = render(<WorkspaceRail />);
+    // The Home terminal now lives in the TitleBar, not the rail — it must not
+    // appear here at all (no entry, and not doubled into "repo-one" or "local").
+    expect(queryByLabelText("Home terminal (~)")).toBeNull();
+    // Home has no workspace card either — only the two real lanes render cards.
+    expect(container.querySelectorAll(".aurora-ws-card")).toHaveLength(2);
+    expect(getByText("repo workspace")).toBeTruthy();
+    expect(getByText("manual lane")).toBeTruthy();
+    expect(getByText("local")).toBeTruthy();
+  });
+
+  it("with only Home present, groups.length === 0 and the rail shows onboarding, not a repo group", () => {
+    const home = makeWorkspace({ id: "home", kind: "home", repoId: null, title: "Home", dir: "/Users/tester" });
+    seed({ workspaces: [home], activeWs: "home" });
+    const { getByLabelText, queryByLabelText, queryByText } = render(<WorkspaceRail />);
+    // Home isn't in the rail (it's in the TitleBar); the rail is truly empty and
+    // shows the onboarding CTA.
+    expect(queryByLabelText("Home terminal (~)")).toBeNull();
+    expect(getByLabelText("Add repository").className).toContain("aurora-empty-primary");
+    expect(queryByText("local")).toBeNull();
+  });
+
+  it("the rail renders no trash affordance for a Home-only state", () => {
+    const home = makeWorkspace({ id: "home", kind: "home", repoId: null, title: "Home", dir: "/Users/tester" });
+    seed({ workspaces: [home], activeWs: "home" });
+    const { container } = render(<WorkspaceRail />);
+    // Home never renders a WorkspaceCard (it's not in the rail at all), so no
+    // trash icon exists anywhere in the rail.
+    expect(container.querySelector(".aurora-ws-trash")).toBeNull();
   });
 
   it("typing in the filter box updates wsFilter, and the collapse button collapses the rail", () => {
@@ -599,43 +706,64 @@ describe("WorkspaceCard — handleDelete", () => {
 
 // ── WorkspaceRail: add repository ──────────────────────────────────────────
 
-describe("WorkspaceRail — add repository", () => {
+describe("WorkspaceRail — add repository (footer)", () => {
+  // The footer "Add repository" control only renders once at least one repo
+  // exists (hasRepos); in the zero-repo state the onboarding CTA owns the action
+  // instead (covered in the "empty & repo groups" suite). So each test here
+  // seeds a repo, then targets the footer by its stable `title`.
+  const footerAddRepo = (container: HTMLElement) =>
+    container.querySelector('[title="add another repository folder"]') as HTMLElement;
+  const seedWithRepo = () => seed({ repos: [REPO] });
+
+  it("renders the footer control once a repo exists (and not in the zero-repo state)", () => {
+    seed();
+    const { container: empty } = render(<WorkspaceRail />);
+    expect(footerAddRepo(empty)).toBeNull();
+    cleanup();
+    seedWithRepo();
+    const { container: withRepo } = render(<WorkspaceRail />);
+    expect(footerAddRepo(withRepo)).toBeTruthy();
+  });
+
   it("shows 'Opening…' while busy and ignores a second click until it settles", async () => {
     let resolveAdd!: (v: unknown) => void;
     addRepoImpl = () => new Promise((res) => (resolveAdd = res));
+    seedWithRepo();
     const { container } = render(<WorkspaceRail />);
-    const btn = within(container).getByText("Add repository");
-    fireEvent.click(btn);
+    fireEvent.click(footerAddRepo(container));
     await flush();
-    expect(within(container).getByText("Opening…")).toBeTruthy();
-    fireEvent.click(within(container).getByText("Opening…"));
+    expect(footerAddRepo(container).textContent).toContain("Opening…");
+    fireEvent.click(footerAddRepo(container));
     await flush();
     expect(addRepoCalls).toBe(1);
     resolveAdd({ cancelled: true });
     await flush();
-    expect(within(container).getByText("Add repository")).toBeTruthy();
+    expect(footerAddRepo(container).textContent).toContain("Add repository");
   });
 
   it("shows no error text when the folder pick is cancelled", async () => {
     addRepoImpl = () => Promise.resolve({ cancelled: true });
+    seedWithRepo();
     const { container } = render(<WorkspaceRail />);
-    fireEvent.click(within(container).getByText("Add repository"));
+    fireEvent.click(footerAddRepo(container));
     await flush();
     expect(container.textContent).not.toContain("isn't inside a git repository");
   });
 
   it("shows the error message when addRepoFromFolder resolves ok:false", async () => {
     addRepoImpl = () => Promise.resolve({ ok: false, error: "That folder isn't inside a git repository." });
+    seedWithRepo();
     const { container } = render(<WorkspaceRail />);
-    fireEvent.click(within(container).getByText("Add repository"));
+    fireEvent.click(footerAddRepo(container));
     await flush();
     expect(container.textContent).toContain("That folder isn't inside a git repository.");
   });
 
   it("shows no error message on success", async () => {
     addRepoImpl = () => Promise.resolve({ ok: true, root: "/new", name: "new-repo" });
+    seedWithRepo();
     const { container } = render(<WorkspaceRail />);
-    fireEvent.click(within(container).getByText("Add repository"));
+    fireEvent.click(footerAddRepo(container));
     await flush();
     expect(container.textContent).not.toContain("isn't inside a git repository");
   });

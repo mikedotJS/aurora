@@ -331,6 +331,70 @@ describe("handleKeyDown — ⌘ shortcuts", () => {
     expect(useStore.getState().changesWsId).not.toBeNull();
   });
 
+  // The store accumulates workspaces across tests in this file (no reset in
+  // beforeEach), and the ⌘0 handler resolves Home via `find(kind === "home")`
+  // (first match) — mirroring production, where the Home terminal is a
+  // singleton. Drop any Home left over from earlier tests before creating
+  // "the" Home for these, so `find` deterministically resolves to it.
+  function freshHome(): string {
+    useStore.setState({ workspaces: useStore.getState().workspaces.filter((w) => w.kind !== "home") });
+    return useStore.getState().createWorkspace({ repoId: null, title: "Home", dir: "/Users/test", branch: null, kind: "home" });
+  }
+
+  it("⌘0 jumps to the Home terminal, even with a different workspace active", () => {
+    const homeId = freshHome();
+    mkPane(); // creates + activates a second, non-home workspace
+    expect(useStore.getState().activeWs).not.toBe(homeId);
+
+    const evt = keyEvt("0", { metaKey: true });
+    handleKeyDown(evt);
+    expect(useStore.getState().activeWs).toBe(homeId);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("⌘0 fires on the physical Digit0 key on AZERTY (e.key 'à', no Shift needed)", () => {
+    // AZERTY's top row is unshifted à/é/"/…, so ⌘+0 emits key 'à' (not '0').
+    // The handler matches e.code === 'Digit0', so it must still jump to Home.
+    const homeId = freshHome();
+    mkPane();
+    expect(useStore.getState().activeWs).not.toBe(homeId);
+
+    const evt = keyEvt("à", { metaKey: true, code: "Digit0" });
+    handleKeyDown(evt);
+    expect(useStore.getState().activeWs).toBe(homeId);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("⌘0 is a no-op (still consumes the key) when the Home terminal is already active", () => {
+    const homeId = freshHome();
+    expect(useStore.getState().activeWs).toBe(homeId);
+
+    const evt = keyEvt("0", { metaKey: true });
+    handleKeyDown(evt);
+    expect(useStore.getState().activeWs).toBe(homeId);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("bare 0 (no ⌘) is typed into the prompt input, not swallowed as a shortcut", () => {
+    const id = mkPane();
+    handleKeyDown(keyEvt("0"));
+    expect(pane(id).input).toBe("0");
+  });
+
+  it("⌘0 with no active pane still switches to Home (pane-independent)", () => {
+    const homeId = freshHome();
+    mkPane();
+    useStore.setState({ activeWs: null });
+
+    const evt = keyEvt("0", { metaKey: true });
+    handleKeyDown(evt);
+    expect(useStore.getState().activeWs).toBe(homeId);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  // ⌘⌥D semantics changed on this branch: it toggles the workspace-level
+  // changes OVERLAY (changesWsId), not a per-pane view — main's pane-view
+  // variant of this test was superseded by the overlay one below.
   it("⌘⌥D toggles the changes overlay open <-> closed", () => {
     mkPane();
     useStore.getState().openChanges();
