@@ -166,27 +166,29 @@ describe("Changes view flow", () => {
     await waitForText("README.md");
     await waitForText("untracked.txt");
 
-    // "Changes ·" is the unstaged section header (see ChangesView.tsx render: `Changes · {count}`).
-    const bodyText = await browser.execute(() => document.body.innerText);
-    expect(bodyText).toMatch(/Changes\s*·\s*2/);
+    // "Changes ·" is the unstaged section header (see ChangesView.tsx render:
+    // `Changes · {count}`) — CSS text-transform: uppercase renders it as
+    // "CHANGES · 2" in the DOM (A-1/H-9, .context/e2e-anomalies.md), so match
+    // case-insensitively rather than assuming the source-text case.
+    const bodyText = await browser.execute(() => document.body.textContent);
+    expect(bodyText!.toUpperCase()).toMatch(/CHANGES\s*·\s*2/);
   });
 
   // CHANGES-2: staged vs. unstaged sections both visible with the right files.
-  // Confirmed via a direct git_changed_files invoke() (bypassing rendering)
-  // that the backend correctly reports package.json as staged: true — see
-  // A-1 in .context/e2e-anomalies.md. But the Changes overlay's "Staged"
-  // section header never appears in the DOM even after 20 retries of ⌘G over
-  // ~100s, so the file never visibly moves into a "Staged" section from the
-  // UI's perspective. Skipped pending a fix or a calmer re-run; the assertion
-  // below reflects the EXPECTED behavior, not the observed one.
-  it.skip("CHANGES-2: the Staged section renders package.json as staged", async () => {
+  // A-1 (.context/e2e-anomalies.md) root-caused this as NOT an app bug: the
+  // "Staged" section header carries CSS text-transform: uppercase
+  // (ChangesView.tsx:186), so document.body.innerText renders it as "STAGED"
+  // and a mixed-case substring probe never matched. bodyHasText/waitForText
+  // are now case-insensitive + textContent-based (harness.ts), which fixes
+  // the assertion without touching the app.
+  it("CHANGES-2: the Staged section renders package.json as staged", async () => {
     await seedOne();
     await waitForText("feat/changes");
     await openChangesReliably("Staged");
 
     await waitForText("Staged");
     await waitForText("package.json");
-    const bodyText = await browser.execute(() => document.body.innerText);
+    const bodyText = await browser.execute(() => document.body.textContent);
     expect(bodyText).toContain("Staged");
   });
 
@@ -202,12 +204,11 @@ describe("Changes view flow", () => {
     await waitForText("extra line for the diff");
   });
 
-  // CHANGES-7/8: stage/unstage via the UI. Blocked by the same rendering gap
-  // as CHANGES-2 (A-1, .context/e2e-anomalies.md) — the "Staged" section
-  // marker this test polls for never appeared within budget. The assertions
-  // reflect the expected behavior (stage moves the file into "Staged · N",
-  // unstage moves it back), not a weakened/observed-buggy version.
-  it.skip("CHANGES-7/8: stage moves a file to Staged, unstage moves it back", async () => {
+  // CHANGES-7/8: stage/unstage via the UI. A-1 root-caused the prior "Staged"
+  // marker miss as an assertion bug (innerText upper-cases the text-transform
+  // header), not an app bug — fixed by the case-insensitive/textContent
+  // bodyHasText in harness.ts. Un-skipped.
+  it("CHANGES-7/8: stage moves a file to Staged, unstage moves it back", async () => {
     await seedOne();
     await waitForText("feat/changes");
     await openChangesReliably("README.md");

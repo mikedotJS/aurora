@@ -270,9 +270,21 @@ export async function typeInReactInput(selector: string, text: string): Promise<
 
 // The embedded WebDriver server does not support wdio's `*=text` wildcard-XPath
 // selectors — assert text presence via the DOM directly instead.
+//
+// Case-insensitive + textContent-based (not innerText): innerText is
+// text-transform-aware, so a CSS `text-transform: uppercase` header (e.g.
+// ChangesView's "Staged"/"Changes ·" section labels, Pane.tsx's "running"
+// banner) renders as "STAGED"/"RUNNING" in innerText even though the source
+// text is mixed/lowercase — see A-1 and H-9 in .context/e2e-anomalies.md.
+// textContent returns the verbatim, untransformed text, and comparing
+// case-insensitively means callers no longer need to guess/match the
+// CSS-rendered case.
 
 export async function bodyHasText(text: string): Promise<boolean> {
-  return browser.execute((t) => document.body.innerText.includes(t), text);
+  return browser.execute(
+    (t) => document.body.textContent!.toLowerCase().includes(t.toLowerCase()),
+    text,
+  );
 }
 
 export async function waitForText(text: string, timeout = 15_000): Promise<void> {
