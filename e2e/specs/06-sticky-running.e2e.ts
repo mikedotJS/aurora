@@ -214,16 +214,19 @@ describe("Sticky running server tabs", () => {
     });
   });
 
-  // Batch 4: re-enabled and RE-RUN (the prior batch never got a confirmed
-  // result). Result: FAILS reproducibly — "running affordance did not clear
-  // after Ctrl+C on detached process", even WITH the ~3s poll-settle wait
-  // already in place below (the same fix that makes the sibling
-  // STICKY-CTRL-C, foreground-process case, pass reliably). This is now a
-  // real, confirmed anomaly (A-2, .context/e2e-anomalies.md), not a
-  // budget-exhaustion artifact — re-skipped so the suite stays green while
-  // the anomaly is tracked; do not silently re-skip further without adding
-  // a fresh ledger note if the underlying behavior changes.
-  it.skip("STICKY-DETACHED: a job that backgrounds itself and returns the prompt still badges running; Ctrl+C reaches it", async () => {
+  // A-2 FIXED: previously FAILED reproducibly — "running affordance did not
+  // clear after Ctrl+C on detached process". Root cause: `sleep 60 &!`
+  // backgrounds itself immediately, so it never takes the PTY foreground and
+  // the tcgetpgrp capture sampler never freezes on its pgid (`server.found()`
+  // stays None) — yet the job keeps the pane's tty, so the badge lights up via
+  // the tier-4 scan. `pty_signal_server` only knew how to signal a *captured*
+  // pgid, so Ctrl+C hit nothing. Fix (src-tauri/src/pty.rs): when no live
+  // captured pgid exists, `pty_signal_server` falls back to signalling the live
+  // process group(s) still holding the pane's controlling tty (the same tier-4
+  // scan that reports it "alive"). Proven at the OS level by the
+  // `immediately_backgrounded_job_is_reachable_via_tty_scan_not_capture`
+  // real-PTY test. Un-skipped.
+  it("STICKY-DETACHED: a job that backgrounds itself and returns the prompt still badges running; Ctrl+C reaches it", async () => {
     // zsh idiom that detaches into its own pgid and hands the prompt straight
     // back — the nx --no-tui stand-in described in the proposal/memory note.
     await typeInPane("sleep 60 &! ; echo done");

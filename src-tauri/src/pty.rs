@@ -579,11 +579,34 @@ fn is_foreign_tty_process(pid: i32, e_tdev: u32, tty_dev: u32, shell_pid: Option
 /// `pty_server_status` only when the captured pgid is gone, so idle/never-armed
 /// panes never pay for the scan.
 fn tty_has_foreign_process(tty_dev: u32, shell_pid: Option<i32>) -> bool {
+    !foreign_tty_pgids(tty_dev, shell_pid).is_empty()
+}
+
+/// Collect the distinct **process groups** of every non-shell process that still
+/// holds this pane's controlling terminal (`e_tdev == tty_dev`). Superset of
+/// `tty_has_foreign_process` (which is just "is this non-empty?"): it also
+/// returns the pgids so `pty_signal_server` can signal a detached job that was
+/// never captured by the sampler.
+///
+/// The distinction matters for a job that backgrounds itself *immediately*
+/// (`sleep 60 &!`, `cmd & disown`, and the nx `--no-tui` case): the job never
+/// takes the PTY foreground, so the tcgetpgrp-based capture sampler
+/// (`pty_capture_server_pgid`) never observes a non-shell foreground pgid to
+/// freeze on — `server.found()` stays `None`. But the job DOES keep the pane's
+/// controlling tty (that's how the badge lights up via `tty_has_foreign_process`
+/// / `pty_server_status` → "alive"). Scanning the tty for its live pgid gives
+/// Ctrl+C a real target where the capture path had none. Verified at the OS
+/// level: `killpg(that_pgid, SIGINT)` reaps a `sleep 60 &!` on a real PTY.
+///
+/// Uses each process's own `pbi_pgid` (its real process group), so a group is
+/// signalled once regardless of how many members share it, and never the shell's.
+fn foreign_tty_pgids(tty_dev: u32, shell_pid: Option<i32>) -> Vec<i32> {
+    let mut pgids: Vec<i32> = Vec::new();
     unsafe {
         // First call: how many bytes of pids are there? (buffer = null → size query)
         let cap = libc::proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0);
         if cap <= 0 {
-            return false;
+            return pgids;
         }
         let slots = cap as usize / std::mem::size_of::<libc::pid_t>();
         // Headroom for processes that appear between the two calls.
@@ -595,7 +618,7 @@ fn tty_has_foreign_process(tty_dev: u32, shell_pid: Option<i32>) -> bool {
             (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int,
         );
         if got <= 0 {
-            return false;
+            return pgids;
         }
         let n = got as usize / std::mem::size_of::<libc::pid_t>();
         for &pid in &pids[..n] {
@@ -614,12 +637,18 @@ fn tty_has_foreign_process(tty_dev: u32, shell_pid: Option<i32>) -> bool {
             if sz as usize != std::mem::size_of::<libc::proc_bsdinfo>() {
                 continue;
             }
-            if is_foreign_tty_process(pid, info.e_tdev, tty_dev, shell_pid) {
-                return true;
+            if !is_foreign_tty_process(pid, info.e_tdev, tty_dev, shell_pid) {
+                continue;
+            }
+            // Never signal the shell's own group, even if the shell shares the
+            // tty (it always does). Use the process's real pgid (`pbi_pgid`).
+            let pgid = info.pbi_pgid as i32;
+            if pgid > 1 && Some(pgid) != shell_pid && !pgids.contains(&pgid) {
+                pgids.push(pgid);
             }
         }
-        false
     }
+    pgids
 }
 
 /// Probe whether the pane still has a live server (D8 liveness probe + tier-4 scan).
@@ -747,25 +776,47 @@ pub fn pty_signal_server(manager: State<'_, PtyManager>, id: String, signal: i32
     if !is_allowed_server_signal(signal) {
         return Ok(false); // not an allowlisted signal — refuse, don't forward blindly to killpg
     }
-    let found_pgid: Option<i32> = {
+    // Snapshot the captured pgid plus the tty_dev/shell_pid the fallback scan
+    // needs, under the lock; release it before any syscall.
+    let (found_pgid, tty_dev, shell_pid): (Option<i32>, Option<u32>, Option<i32>) = {
         let sessions = manager.sessions.lock().unwrap();
         match sessions.get(&id) {
             None => return Ok(false),
-            Some(s) => s.server.found(),
+            Some(s) => (s.server.found(), s.tty_dev, s.shell_pgid),
         }
         // lock released here before the killpg syscalls below
     };
-    let pgid = match found_pgid {
-        Some(p) => p,
-        None => return Ok(false), // Idle / Pending / Failed — nothing captured to target
+
+    // Fast path: a captured group that's still alive is the target (foreground
+    // server that detached, or a `build && serve` chain the sampler froze on).
+    if let Some(pgid) = found_pgid {
+        if unsafe { libc::killpg(pgid, 0) } == 0 {
+            unsafe { libc::killpg(pgid, signal); }
+            return Ok(true);
+        }
+        // ESRCH/gone — fall through to the tty scan (the process may have
+        // re-parented off the captured pgid, nx-style, and still be alive).
+    }
+
+    // Fallback: no live captured pgid. A job that backgrounded itself before the
+    // sampler ever saw it take the foreground (`sleep 60 &!`, `cmd & disown`, nx
+    // `--no-tui`) leaves `server.found()` None, yet still holds this pane's tty —
+    // which is exactly why the badge lit up (tier-4 `tty_has_foreign_process`).
+    // Signal the live process group(s) still on the pane's tty so Ctrl+C reaches
+    // the detached job the capture path couldn't, honestly reporting failure only
+    // when the tty is genuinely clear.
+    let dev = match tty_dev {
+        Some(d) => d,
+        None => return Ok(false), // no tty to scan — nothing to reach
     };
-    if unsafe { libc::killpg(pgid, 0) } != 0 {
-        return Ok(false); // dead (ESRCH) or otherwise gone — do not signal
+    let mut signalled = false;
+    for pgid in foreign_tty_pgids(dev, shell_pid) {
+        if unsafe { libc::killpg(pgid, 0) } == 0 {
+            unsafe { libc::killpg(pgid, signal); }
+            signalled = true;
+        }
     }
-    unsafe {
-        libc::killpg(pgid, signal);
-    }
-    Ok(true)
+    Ok(signalled)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1101,6 +1152,9 @@ mod real_pty_tests {
         shell_pgid: i32,
         writer: Box<dyn Write + Send>,
         output: Arc<Mutex<Vec<u8>>>,
+        /// Controlling-tty device of this pane's slave — same value `pty_spawn`
+        /// records, so the tier-4 tty scan (`foreign_tty_pgids`) can be exercised.
+        tty_dev: Option<u32>,
     }
 
     /// Spawn `/bin/zsh` (Aurora's default shell) on a fresh PTY, mirroring
@@ -1130,6 +1184,9 @@ mod real_pty_tests {
         cmd.arg("--no-rcs"); // skip .zshrc — deterministic, fast prompt, no user config surprises
         let child = pair.slave.spawn_command(cmd).expect("spawn zsh");
         let shell_pgid = child.process_id().expect("pid") as i32;
+        // Capture the controlling-tty device before the slave is dropped, the
+        // same way `pty_spawn` does — this is what the tier-4 scan matches on.
+        let tty_dev = pair.master.as_raw_fd().and_then(super::tty_dev_of_master);
         drop(pair.slave);
 
         let writer = pair.master.take_writer().expect("take_writer (once per master)");
@@ -1153,7 +1210,7 @@ mod real_pty_tests {
         // test, which is more representative of what Aurora actually does
         // (group_teardown) than child.kill().
         std::mem::forget(child);
-        Session { master: pair.master, shell_pgid, writer, output }
+        Session { master: pair.master, shell_pgid, writer, output, tty_dev }
     }
 
     /// Write a line + newline to the shell's PTY.
@@ -1335,6 +1392,85 @@ mod real_pty_tests {
         assert!(died, "killpg(SIGINT) on the captured detached pgid must actually kill it (pgid {detached_pgid})");
 
         unsafe { libc::killpg(shell_pgid, libc::SIGKILL) };
+    }
+
+    /// A-2 regression — an *immediately* self-backgrounding job (`sleep 60 &!`,
+    /// the zsh detach idiom the e2e's STICKY-DETACHED uses, equivalent to nx's
+    /// `--no-tui`): the job never takes the PTY foreground, so the tcgetpgrp
+    /// capture sampler never freezes on a non-shell pgid (`server.found()` stays
+    /// None) — yet the job keeps the pane's controlling tty (that's why the badge
+    /// still lights up via the tier-4 scan). Before the fix, `pty_signal_server`
+    /// only knew how to signal a *captured* pgid, so Ctrl+C hit nothing and the
+    /// process survived (the exact A-2 failure). This proves the tier-4 fallback
+    /// (`foreign_tty_pgids` → `killpg(pgid, SIGINT)`) finds the detached job on
+    /// the tty and actually reaps it.
+    #[test]
+    fn immediately_backgrounded_job_is_reachable_via_tty_scan_not_capture() {
+        let mut session = spawn_shell();
+        let shell_pgid = session.shell_pgid;
+        let tty_dev = session.tty_dev.expect("pane must have a controlling tty");
+        wait_for(&session, Duration::from_secs(3), |fg| fg == Some(shell_pgid));
+
+        // `&!` backgrounds AND disowns in one step, handing the prompt straight
+        // back — the foreground never leaves the shell (that's the whole trap).
+        send_line(&mut session, "sleep 60 &! ; echo done");
+
+        // The PTY foreground must be (or return to) the shell — tier 1 is false.
+        let fg_after = wait_for(&session, Duration::from_secs(3), |fg| fg == Some(shell_pgid));
+        assert_eq!(fg_after, Some(shell_pgid), "foreground must be the shell for an immediately-backgrounded job");
+        assert!(!fg_is_non_shell(fg_after, Some(shell_pgid)), "tier 1 must report not-running");
+
+        // The tier-4 tty scan MUST find the detached job (this is what makes the
+        // badge appear) — and it must yield a live pgid distinct from the shell.
+        let pgids = wait_for_foreign_pgids(tty_dev, Some(shell_pgid), Duration::from_secs(3));
+        assert!(
+            !pgids.is_empty(),
+            "the detached `sleep 60 &!` must be found on the pane's tty (tty_dev {tty_dev:#x}), got none"
+        );
+        assert!(pgids.iter().all(|&p| p != shell_pgid), "scan must never return the shell's own pgid");
+        assert!(pgids.iter().any(|&p| unsafe { libc::killpg(p, 0) } == 0), "scanned pgid must be alive");
+
+        // Now do exactly what the fixed `pty_signal_server` fallback does: signal
+        // every live foreign pgid on the tty with SIGINT.
+        assert!(is_allowed_server_signal(libc::SIGINT));
+        let mut signalled = false;
+        for p in &pgids {
+            if unsafe { libc::killpg(*p, 0) } == 0 {
+                unsafe { libc::killpg(*p, libc::SIGINT) };
+                signalled = true;
+            }
+        }
+        assert!(signalled, "fallback must have signalled at least one live pgid");
+
+        // The `sleep 60` must actually be dead now, and the tty scan must go
+        // clean (so `pty_server_status` flips to "dead" → the badge clears).
+        let cleared = {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut clear = false;
+            while Instant::now() < deadline {
+                if super::foreign_tty_pgids(tty_dev, Some(shell_pgid)).is_empty() {
+                    clear = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            clear
+        };
+        assert!(cleared, "SIGINT via the tty-scan fallback must reap the detached `sleep 60 &!` (tty then clears)");
+
+        unsafe { libc::killpg(shell_pgid, libc::SIGKILL) };
+    }
+
+    /// Poll `foreign_tty_pgids` until it returns a non-empty set or `timeout`
+    /// elapses. Returns the last observed set.
+    fn wait_for_foreign_pgids(tty_dev: u32, shell_pid: Option<i32>, timeout: Duration) -> Vec<i32> {
+        let deadline = Instant::now() + timeout;
+        let mut last = super::foreign_tty_pgids(tty_dev, shell_pid);
+        while Instant::now() < deadline && last.is_empty() {
+            std::thread::sleep(Duration::from_millis(50));
+            last = super::foreign_tty_pgids(tty_dev, shell_pid);
+        }
+        last
     }
 
     /// 7.4 — uncaptured edge: signalling a pgid that is already dead (the
