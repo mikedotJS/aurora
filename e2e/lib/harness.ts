@@ -145,6 +145,129 @@ export async function chord(...keys: string[]): Promise<void> {
   await browser.keys(keys);
 }
 
+/**
+ * Dispatch a synthetic `keydown` on `window` from inside the webview, instead
+ * of `browser.keys()` (H-5): `browser.keys()` simulates real OS-level input,
+ * which requires the app window to hold actual OS focus. In this harness the
+ * embedded WebDriver's window-focus channel (`get_window_states`, backing
+ * `ensureActiveWindowFocus`) never resolves (`Tauri core.invoke not available
+ * after 5s timeout` — logged every ~6s, harmless to app behavior but means
+ * wdio never confirms/sets OS focus), so `browser.keys()` chords are silently
+ * dropped — Aurora's `window.addEventListener("keydown", handleKeyDown)`
+ * (src/App.tsx:144) never fires. Dispatching the event directly in-page reaches
+ * the same listener without depending on OS focus at all.
+ */
+export async function dispatchKey(
+  key: string,
+  opts: { meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } = {},
+): Promise<void> {
+  await browser.execute(
+    (k, metaKey, shiftKey, altKey, ctrlKey) => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: k, metaKey, shiftKey, altKey, ctrlKey, bubbles: true, cancelable: true }),
+      );
+    },
+    key,
+    opts.meta ?? false,
+    opts.shift ?? false,
+    opts.alt ?? false,
+    opts.ctrl ?? false,
+  );
+}
+
+/** A ⌘-chord via dispatchKey, e.g. dispatchMetaKey("k") for ⌘K. */
+export async function dispatchMetaKey(key: string): Promise<void> {
+  await dispatchKey(key, { meta: true });
+}
+
+/**
+ * Like dispatchKey, but dispatched FROM a specific element rather than
+ * `window` — needed for React onKeyDown handlers bound directly to an input
+ * (e.g. the ⌘K palette's own Enter/Tab/Escape handling in WorkspaceCommand.tsx),
+ * since React's synthetic event system still respects the event's target/bubble
+ * path even though it delegates listening to the root.
+ */
+export async function dispatchKeyOn(
+  selector: string,
+  key: string,
+  opts: { meta?: boolean; shift?: boolean; alt?: boolean; ctrl?: boolean } = {},
+): Promise<void> {
+  await browser.execute(
+    (sel, k, metaKey, shiftKey, altKey, ctrlKey) => {
+      const el = document.querySelector(sel);
+      if (!el) throw new Error(`dispatchKeyOn: no element for selector ${sel}`);
+      el.dispatchEvent(
+        new KeyboardEvent("keydown", { key: k, metaKey, shiftKey, altKey, ctrlKey, bubbles: true, cancelable: true }),
+      );
+    },
+    selector,
+    key,
+    opts.meta ?? false,
+    opts.shift ?? false,
+    opts.alt ?? false,
+    opts.ctrl ?? false,
+  );
+}
+
+/**
+ * Click an element by dispatching a synthetic `MouseEvent("click")` in-page,
+ * instead of wdio's `element.click()` (H-5d). `element.click()` goes through
+ * wdio's `elementClick` command, which is in `@wdio/tauri-service`'s
+ * `focusCommands` list — every call first awaits `ensureActiveWindowFocus()`,
+ * which itself awaits the broken `get_window_states` invoke (see H-5) and can
+ * stall or misbehave under load, occasionally swallowing the click entirely
+ * (observed: a real "Create workspace" submit never reached React's onClick,
+ * so the workspace was never created and the dialog never closed — a
+ * synthetic dispatch on the same element completed successfully in a fraction
+ * of the time). Prefer this for any click that gates a subsequent wait.
+ */
+export async function clickText(tag: string, text: string): Promise<void> {
+  const ok = await browser.execute(
+    (t, txt) => {
+      // Substring match, not exact equality — buttons commonly prefix their
+      // label with an aria-hidden glyph span (e.g. "⇋Add repository"), which
+      // folds into textContent even though it's not part of the visible label.
+      const el = Array.from(document.querySelectorAll(t)).find((e) => e.textContent?.includes(txt)) as HTMLElement | undefined;
+      if (!el) return false;
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return true;
+    },
+    tag,
+    text,
+  );
+  if (!ok) throw new Error(`clickText: no <${tag}> containing text "${text}"`);
+}
+
+/**
+ * Type into a React-controlled `<input>` reliably (H-5 continued): wdio's
+ * `element.setValue()` sets the DOM `.value` via a path React 19's input value
+ * tracking (`_valueTracker`) recognizes as "already seen," so the subsequent
+ * `input` event is treated as a no-op duplicate and `onChange` never fires —
+ * the component's state (e.g. WorkspaceCommand's `query`) silently stays "".
+ * Symptom: the DOM shows the typed text, but nothing driven by React state
+ * (filtered lists, form defaults, quick-create) reflects it.
+ * Fix: set `.value` via the native `HTMLInputElement` setter (bypassing
+ * React's patched setter) and reset `_valueTracker`'s cached value first, so
+ * React's change detection sees a real diff when `input` fires.
+ */
+export async function typeInReactInput(selector: string, text: string): Promise<void> {
+  await browser.execute(
+    (sel, val) => {
+      const el = document.querySelector(sel) as (HTMLInputElement | HTMLTextAreaElement) & {
+        _valueTracker?: { setValue: (v: string) => void };
+      };
+      if (!el) throw new Error(`typeInReactInput: no element for selector ${sel}`);
+      const proto = el instanceof HTMLTextAreaElement ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")!.set!;
+      el._valueTracker?.setValue("");
+      setter.call(el, val);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    },
+    selector,
+    text,
+  );
+}
+
 // The embedded WebDriver server does not support wdio's `*=text` wildcard-XPath
 // selectors — assert text presence via the DOM directly instead.
 

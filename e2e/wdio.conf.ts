@@ -1,3 +1,4 @@
+import { browser } from "@wdio/globals";
 import { fileURLToPath } from "node:url";
 
 // Absolute path — the service resolves relative paths against cwd, not this file.
@@ -37,4 +38,17 @@ export const config: WebdriverIO.Config = {
   waitforTimeout: 15_000,
   connectionRetryTimeout: 120_000,
   connectionRetryCount: 2,
+  // H-6 fix: every focus-sensitive command pays a ~5s `get_window_states` retry
+  // (core.invoke is unavailable without the Phase-2 plugin). An explicit
+  // switchWindow marks the session as user-switched, which makes
+  // ensureActiveWindowFocus skip that check for the rest of the session.
+  before: async () => {
+    try {
+      await (browser as unknown as { tauri: { switchWindow: (l: string) => Promise<void> } }).tauri.switchWindow(
+        "main",
+      );
+    } catch {
+      /* best effort — worst case we keep the slow path */
+    }
+  },
 };
