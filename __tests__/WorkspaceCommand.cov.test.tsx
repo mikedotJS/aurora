@@ -93,6 +93,11 @@ beforeEach(() => {
     command: { query: "", sel: 0 },
     repoConfigs: {},
     connections: emptyConnections(),
+    // Reset explicitly: Zustand's setState merges, so a prior test's
+    // `apiKeyPresent: true` (needed for the ⌘Enter AI-create shortcut to not
+    // surface the NoKeyError message) would otherwise leak forward into every
+    // later test in this file.
+    apiKeyPresent: false,
   });
 });
 
@@ -103,13 +108,13 @@ afterEach(() => {
 // ── repo resolution + empty/disabled states ─────────────────────────────────
 
 describe("repo resolution and disabled states", () => {
-  it("with zero repos: shows the empty message, all 4 sources, and no-ops quick-create/openForm", () => {
+  it("with zero repos: shows the empty message, all 3 sources, and no-ops quick-create/openForm", () => {
     render(<WorkspaceCommand />);
     expect(screen.getByText("Open a git repository to create workspaces.")).toBeTruthy();
     expect(screen.queryByText("Choose repo")).toBeNull();
     expect(screen.getByText("a Jira issue")).toBeTruthy();
     expect(screen.getByText("a new branch off base")).toBeTruthy();
-    expect(screen.getByText("a plain-language description")).toBeTruthy();
+    expect(screen.queryByText("a plain-language description")).toBeNull();
     expect(screen.getByText("a clone of this workspace")).toBeTruthy();
 
     // click a non-disabled source row (branch) — quickCreate short-circuits on !repo
@@ -129,7 +134,7 @@ describe("repo resolution and disabled states", () => {
     fireEvent.keyDown(input, { key: "ArrowUp" });
     expect(useStore.getState().command?.sel).toBe(0);
     fireEvent.keyDown(input, { key: "ArrowUp" });
-    expect(useStore.getState().command?.sel).toBe(3); // wraps to last of 4 sources
+    expect(useStore.getState().command?.sel).toBe(2); // wraps to last of 3 sources
 
     // Enter activates the clamped item; still a no-op since there's no repo
     fireEvent.keyDown(input, { key: "Enter" });
@@ -193,7 +198,7 @@ describe("repo resolution and disabled states", () => {
     // `calls` before quickCreate's first `await` yields) rather than the eventual
     // (async, and here validate_branch_name-default-shape-dependent) create
     // outcome — that keeps this a precise, timing-safe test of the guard itself.
-    useStore.setState({ command: { ...useStore.getState().command!, sel: 3 } }); // sources[3] = clone
+    useStore.setState({ command: { ...useStore.getState().command!, sel: 2 } }); // sources[2] = clone
     fireEvent.keyDown(input, { key: "Enter" });
     expect(tauri.calls().some((c) => c.cmd === "validate_branch_name")).toBe(false);
 
@@ -393,35 +398,20 @@ describe("Jira search", () => {
 // ── openForm variants ────────────────────────────────────────────────────────
 
 describe("openForm", () => {
-  it("describe: prefills branch from the trimmed query, and falls back to 'work' when empty", () => {
-    const repoA = makeRepo("/repos/a", { name: "Alpha" });
-    useStore.setState({ repos: [repoA], command: { query: "  Fix the login bug  ", sel: 0 } });
-    render(<WorkspaceCommand />);
-    fireEvent.click(screen.getByText("a plain-language description"));
-    expect(screen.getByDisplayValue("fix-the-login-bug")).toBeTruthy();
-    fireEvent.click(screen.getByText("Back"));
-    cleanup();
-
-    useStore.setState({ repos: [repoA], workspaces: [], command: { query: "   ", sel: 0 } });
-    render(<WorkspaceCommand />);
-    fireEvent.click(screen.getByText("a plain-language description"));
-    expect(screen.getByDisplayValue("work")).toBeTruthy();
-  });
-
   // Clicking a source row goes through quickCreate (which handles "clone" itself
   // without ever opening the form) — only Tab explicitly routes to openForm for
-  // every source kind. Use Tab, with sel pinned at the clone item (index 3: no
-  // matches, jira disconnected → items = [jira, branch, describe, clone]).
+  // every source kind. Use Tab, with sel pinned at the clone item (index 2: no
+  // matches, jira disconnected → items = [jira, branch, clone]).
   it("clone: seeds title/branch from the active workspace when present, and from the repo name when absent", () => {
     const repoA = makeRepo("/repos/a", { name: "Alpha" });
     const active = makeWorkspace("wsActive", { repoId: repoA.id, title: "My WS", branch: "feat/foo" });
-    useStore.setState({ repos: [repoA], workspaces: [active], activeWs: active.id, command: { query: "", sel: 3 } });
+    useStore.setState({ repos: [repoA], workspaces: [active], activeWs: active.id, command: { query: "", sel: 2 } });
     render(<WorkspaceCommand />);
     fireEvent.keyDown(screen.getByPlaceholderText("Switch workspace, or describe / name one to create…"), { key: "Tab" });
     expect(screen.getByDisplayValue("feat-foo-copy")).toBeTruthy();
     cleanup();
 
-    useStore.setState({ repos: [repoA], workspaces: [], activeWs: null, command: { query: "", sel: 3 } });
+    useStore.setState({ repos: [repoA], workspaces: [], activeWs: null, command: { query: "", sel: 2 } });
     render(<WorkspaceCommand />);
     fireEvent.keyDown(screen.getByPlaceholderText("Switch workspace, or describe / name one to create…"), { key: "Tab" });
     expect(screen.getByDisplayValue("work-copy")).toBeTruthy(); // no active ws → slugify("work")
@@ -434,6 +424,231 @@ describe("openForm", () => {
     fireEvent.click(screen.getByText("a new branch off base"));
     expect(screen.getByDisplayValue("")).toBeTruthy(); // initial.branch === query.trim() === ""
     expect(useStore.getState().workspaces.length).toBe(0); // never hit runCreate
+  });
+});
+
+// ── AI-generated title + branch, triggered by ⌘Enter / Ctrl+Enter on the input ──
+
+describe("AI create shortcut (⌘Enter / Ctrl+Enter)", () => {
+  it("the 'a plain-language description' row no longer exists in the palette", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "fix the login bug", sel: 0 } });
+    render(<WorkspaceCommand />);
+    expect(screen.queryByText("a plain-language description")).toBeNull();
+    // the other 3 sources are unaffected
+    expect(screen.getByText("a Jira issue")).toBeTruthy();
+    expect(screen.getByText("a new branch off base")).toBeTruthy();
+    expect(screen.getByText("a clone of this workspace")).toBeTruthy();
+  });
+
+  it("the footer advertises the shortcut", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], command: { query: "", sel: 0 } });
+    render(<WorkspaceCommand />);
+    expect(screen.getByText("create with AI")).toBeTruthy();
+  });
+
+  it("⌘Enter with text in the input fires both AI calls with the right params (title via claudeText, branch via resolveBranchName's AI+validator path), regardless of which item is selected", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    const ws1 = makeWorkspace("ws1", { repoId: repoA.id, title: "unrelated match" });
+    // sel defaults to 0, which resolves to a workspace match, not a source —
+    // the shortcut must fire independently of what's selected in the list.
+    useStore.setState({ repos: [repoA], workspaces: [ws1], apiKeyPresent: true, command: { query: "fix the login redirect bug", sel: 0 } });
+    tauri.invoke({
+      claude_text: (args) =>
+        String(args.system).includes("workspace title")
+          ? "Fix login redirect"
+          : JSON.stringify({ name: "fix/login-redirect", reasoning: "matches the description" }),
+      validate_branch_name: () => ({ ok: true, message: null, enforced: true }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    await waitFor(() => expect(screen.getByText("New workspace")).toBeTruthy());
+
+    const claudeCalls = tauri.calls().filter((c) => c.cmd === "claude_text");
+    expect(claudeCalls.length).toBe(2); // one for the title, one for the branch
+    expect(claudeCalls.some((c) => String(c.args.system).includes("workspace title") && c.args.prompt === "fix the login redirect bug")).toBe(true);
+    expect(claudeCalls.some((c) => String(c.args.prompt).includes("Issue title: fix the login redirect bug"))).toBe(true);
+    // criterion: the generated branch went through the repo's validator (not a
+    // client-side slugify) — resolveBranchName's "ai" path calls validate_branch_name.
+    expect(tauri.calls().some((c) => c.cmd === "validate_branch_name" && c.args.name === "fix/login-redirect")).toBe(true);
+    // no workspace was switched/created — this opened the pre-filled form, nothing else.
+    expect(useStore.getState().workspaces.length).toBe(1);
+  });
+
+  it("Ctrl+Enter triggers the same AI-create flow as ⌘Enter", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "add dark mode", sel: 0 } });
+    tauri.invoke({
+      claude_text: (args) =>
+        String(args.system).includes("workspace title") ? "Add dark mode" : JSON.stringify({ name: "feat/dark-mode", reasoning: "r" }),
+      validate_branch_name: () => ({ ok: true, message: null, enforced: true }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(screen.getByText("New workspace")).toBeTruthy());
+    expect(tauri.calls().filter((c) => c.cmd === "claude_text").length).toBe(2);
+  });
+
+  // Criterion 1: the AI-generated title (from openDescribeForm's claudeText call)
+  // must be shown AND editable in the scope form — a dedicated "Title" field for
+  // source "describe" (WorkspaceScopeForm.tsx), distinct from the read-only Jira
+  // summary block (which stays issueKey-gated for issue-backed sources).
+  it("shows the AI-generated title in an editable field", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "fix the login redirect bug", sel: 0 } });
+    tauri.invoke({
+      claude_text: (args) =>
+        String(args.system).includes("workspace title") ? "Fix login redirect" : JSON.stringify({ name: "fix/login-redirect", reasoning: "r" }),
+      validate_branch_name: () => ({ ok: true, message: null, enforced: true }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(screen.getByText("New workspace")).toBeTruthy());
+
+    const titleInput = screen.getByDisplayValue("Fix login redirect");
+    expect(titleInput).toBeTruthy();
+    fireEvent.change(titleInput, { target: { value: "Fix the login redirect, edited" } });
+    expect(screen.getByDisplayValue("Fix the login redirect, edited")).toBeTruthy();
+  });
+
+  // Criterion 2: the branch shown must be the AI+validator result openDescribeForm
+  // already computed — the form must NOT re-resolve it via the repo's *configured*
+  // branchNaming (default: manual "{key}/{slug}"), which would collapse to a bare
+  // slug since the describe NameIssue has no `key`.
+  it("keeps the AI-generated, validator-checked branch untouched on mount (does not re-resolve via the repo's configured branchNaming)", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "fix the login redirect bug", sel: 0 } });
+    tauri.invoke({
+      claude_text: (args) =>
+        String(args.system).includes("workspace title") ? "Fix login redirect" : JSON.stringify({ name: "fix/login-redirect", reasoning: "r" }),
+      validate_branch_name: () => ({ ok: true, message: null, enforced: true }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(screen.getByText("New workspace")).toBeTruthy());
+
+    expect(screen.getByDisplayValue("fix/login-redirect")).toBeTruthy();
+    expect(screen.queryByDisplayValue("fix-login-redirect")).toBeNull();
+  });
+
+  it("shows a loading indicator while the AI calls are in flight, and it clears afterward", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "add dark mode", sel: 0 } });
+    // Two concurrent claude_text calls are made (title + branch) — queue a
+    // resolver per call so each can be released independently.
+    const resolvers: Array<(v: string) => void> = [];
+    tauri.invoke({
+      claude_text: (args) =>
+        new Promise<string>((res) => {
+          resolvers.push((v) => res(v));
+          void args; // both calls share this handler; distinguished by push order
+        }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    // still on the palette (form not open yet) with the busy copy visible near
+    // the error/status area at the bottom of the list.
+    await waitFor(() => expect(screen.getByText("Asking Claude for a title and branch name…")).toBeTruthy());
+    expect(screen.queryByText("New workspace")).toBeNull();
+
+    await waitFor(() => expect(resolvers.length).toBe(2));
+    resolvers[0](JSON.stringify({ name: "feat/dark-mode", reasoning: "ok" }));
+    resolvers[1]("Add dark mode");
+    tauri.invoke({ validate_branch_name: () => ({ ok: true, message: null, enforced: true }) });
+
+    await waitFor(() => expect(screen.queryByText("Asking Claude for a title and branch name…")).toBeNull());
+  });
+
+  it("on error: shows an error message, does not open the form (no key-entry routing), and creates nothing", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "add dark mode", sel: 0 } });
+    tauri.invoke({
+      claude_text: () => {
+        throw new Error("backend exploded");
+      },
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+
+    // claudeText's catch (src/ai/suggest.ts:52-54) wraps the original Error in a
+    // new Error(String(e), { cause: e }) — one "Error: " prefix baked into the
+    // message. openDescribeForm's catch (WorkspaceCommand.tsx) must read
+    // e.message (not String(e) again), so the user sees a single prefix, not two.
+    await waitFor(() => expect(screen.getByText("Error: backend exploded")).toBeTruthy());
+    expect(screen.queryByText("New workspace")).toBeNull(); // stayed on the palette
+    expect(useStore.getState().workspaces.length).toBe(0); // nothing created
+    expect(tauri.calls().some((c) => c.cmd === "worktree_add")).toBe(false);
+  });
+
+  it("on NoKeyError specifically (no API key configured): surfaces the friendly add-a-key message rather than a silent no-op", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    // apiKeyPresent left false — the shortcut must still attempt the AI call
+    // (no client-side gate) and let the real NoKeyError surface the message.
+    useStore.setState({ repos: [repoA], command: { query: "add dark mode", sel: 0 } });
+    tauri.invoke({
+      claude_text: () => {
+        throw new Error("no-key");
+      },
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(screen.getByText("Add an Anthropic API key to use AI workspace creation.")).toBeTruthy());
+    expect(screen.queryByText("New workspace")).toBeNull();
+  });
+
+  it("when the branch validator can't be satisfied (empty branchResult.name): surfaces the explanation and never opens the form", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "add dark mode", sel: 0 } });
+    tauri.invoke({
+      // detect_branch_validator triggers the retry-chain in resolveBranchName's
+      // "ai" source; validate_branch_name always fails, so after AI_RETRY_LIMIT
+      // attempts branchResult.name is a non-empty but *invalid* name — to hit the
+      // `!branchResult.name` branch we instead simulate the no-key path, which is
+      // the actual real-world way resolveBranchName returns an empty name.
+      claude_text: () => {
+        throw new Error("no-key");
+      },
+      detect_branch_validator: () => ({ regex: "^feat/.+$", source: "package.json" }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(screen.getByText("Add an Anthropic API key to use AI workspace creation.")).toBeTruthy());
+    expect(screen.queryByText("New workspace")).toBeNull();
+    expect(useStore.getState().workspaces.length).toBe(0);
+  });
+
+  it("does nothing when the query is blank (no AI calls, no form) — clean no-op", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], apiKeyPresent: true, command: { query: "   ", sel: 0 } });
+    tauri.invoke({ claude_text: () => "should not be called" });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    expect(tauri.calls().some((c) => c.cmd === "claude_text")).toBe(false);
+    expect(screen.queryByText("New workspace")).toBeNull();
+  });
+
+  it("under noContext (2+ repos, no active/target): ⌘Enter is a no-op", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    const repoB = makeRepo("/repos/b", { name: "Beta" });
+    useStore.setState({ repos: [repoA, repoB], apiKeyPresent: true, command: { query: "add dark mode", sel: 0 } });
+    tauri.invoke({ claude_text: () => "should not be called" });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "Enter", metaKey: true });
+    expect(tauri.calls().some((c) => c.cmd === "claude_text")).toBe(false);
+    expect(screen.queryByText("New workspace")).toBeNull();
   });
 });
 

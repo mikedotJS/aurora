@@ -11,6 +11,8 @@ import { buildBranchName, slugify } from "../lib/branchName";
 import { runCreate, buildCreateSpec, resolveCreateDefaults, type CreateSource } from "../lib/create";
 import { listPresets } from "../lib/presets";
 import { jiraSearch, repoJira, type JiraIssue } from "../lib/jira";
+import { resolveBranchName, suggestWorkspaceTitle } from "../lib/branchNaming";
+import { NoKeyError } from "../ai/suggest";
 
 interface SourceDef {
   key: CreateSource;
@@ -20,7 +22,6 @@ interface SourceDef {
 const SOURCES: SourceDef[] = [
   { key: "jira", glyph: "▦", label: "a Jira issue" },
   { key: "branch", glyph: "⎇", label: "a new branch off base" },
-  { key: "describe", glyph: "✦", label: "a plain-language description" },
   { key: "clone", glyph: "⧉", label: "a clone of this workspace" },
 ];
 
@@ -28,6 +29,10 @@ interface FormState {
   source: CreateSource;
   repo: Repo;
   initial: ScopeInitial;
+  // True only when this form was just populated by openDescribeForm's AI
+  // result — cues WorkspaceScopeForm to play the one-shot reveal animation on
+  // its title/branch fields instead of rendering them already-settled.
+  justResolved?: boolean;
 }
 
 type Item =
@@ -46,12 +51,14 @@ export function WorkspaceCommand() {
   const workspaces = useStore((s) => s.workspaces);
   const repos = useStore((s) => s.repos);
   const active = useStore(activeWorkspace);
+  const model = useStore((s) => s.settings.model);
   // Subscribe so the bound-connection resolution re-runs when the pool / configs change.
   useStore((s) => s.connections);
   useStore((s) => s.repoConfigs);
 
   const [form, setForm] = useState<FormState | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [describing, setDescribing] = useState(false);
   const [jiraIssues, setJiraIssues] = useState<JiraIssue[]>([]);
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
@@ -176,14 +183,50 @@ export function WorkspaceCommand() {
         baseBranch: active?.branch,
         preset: active?.preset,
       };
-    } else if (source === "describe") {
-      const text = query.trim();
-      initial = { title: text || "new workspace", branch: buildBranchName({ title: text || "work" }) };
     } else {
       // branch
       initial = { title: query.trim() || "", branch: query.trim() };
     }
     setForm({ source, repo, initial });
+  };
+
+  // "describe" source: two AI calls in parallel — a title (claudeText) and a
+  // validator-checked branch name (resolveBranchName, source "ai") — then open
+  // the scope form pre-filled with both, still fully editable before creation.
+  // Never falls back to slugification; on error/NoKeyError, surface via
+  // createError and stay on the palette (no key-entry routing, no creation).
+  const openDescribeForm = async () => {
+    if (!repo || noContext || describing) return;
+    const text = query.trim();
+    if (!text) return;
+    setCreateError(null);
+    setDescribing(true);
+    try {
+      const [branchResult, title] = await Promise.all([
+        resolveBranchName({ source: "ai", instruction: "a short, descriptive branch name", chainValidator: true }, { title: text }, repo.root, model),
+        suggestWorkspaceTitle(text, model),
+      ]);
+      if (!branchResult.name) {
+        setCreateError(branchResult.explanation || "Couldn't generate a branch name.");
+        return;
+      }
+      setForm({
+        source: "describe",
+        repo,
+        initial: { title: title || text, branch: branchResult.name },
+        justResolved: true,
+      });
+    } catch (e) {
+      setCreateError(
+        e instanceof NoKeyError
+          ? "Add an Anthropic API key to use AI workspace creation."
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
+    } finally {
+      setDescribing(false);
+    }
   };
 
   // The repo's default preset (named "feature", else the first configured one).
@@ -251,6 +294,7 @@ export function WorkspaceCommand() {
     if (e.key === "Escape") return void (e.preventDefault(), closeCommand());
     if (e.key === "ArrowDown") return void (e.preventDefault(), moveCommand(1, count));
     if (e.key === "ArrowUp") return void (e.preventDefault(), moveCommand(-1, count));
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) return void (e.preventDefault(), openDescribeForm());
     if (e.key === "Enter") return void (e.preventDefault(), activateAt(clamped));
     if (e.key === "Tab") {
       e.preventDefault();
@@ -308,7 +352,13 @@ export function WorkspaceCommand() {
         }}
       >
         {form ? (
-          <WorkspaceScopeForm repo={form.repo} source={form.source} initial={form.initial} onCancel={() => setForm(null)} />
+          <WorkspaceScopeForm
+            repo={form.repo}
+            source={form.source}
+            initial={form.initial}
+            justResolved={form.justResolved}
+            onCancel={() => setForm(null)}
+          />
         ) : (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "15px 18px", borderBottom: "1px solid var(--line)" }}>
@@ -392,7 +442,7 @@ export function WorkspaceCommand() {
               )}
               {matches.length > 0 && (
                 <>
-                  <Section label="Switch to" />
+                  <Section label="Switch to" order={0} />
                   {matches.map((w, i) => (
                     <Row key={w.id} active={i === clamped} onHover={() => setSel(i)} onClick={() => activateAt(i)}>
                       <StatusDot ws={w} />
@@ -407,7 +457,7 @@ export function WorkspaceCommand() {
 
               {jiraIssues.length > 0 && (
                 <>
-                  <Section label={q ? "Jira · matching issues" : "Jira · my sprint"} />
+                  <Section label={q ? "Jira · matching issues" : "Jira · my sprint"} order={1} />
                   {jiraIssues.map((iss, i) => {
                     const idx = jiraStart + i;
                     return (
@@ -430,14 +480,14 @@ export function WorkspaceCommand() {
 
               {jiraConnected && jiraIssues.length === 0 && (
                 <>
-                  <Section label="Jira" />
+                  <Section label="Jira" order={1} />
                   <div style={{ padding: "2px 18px 8px", fontFamily: "var(--sans)", fontSize: 12, color: "var(--faint)" }}>
                     {q ? "No matching issues — try an issue key like PROJ-123." : "Type an issue key or keywords to find your Jira issues."}
                   </div>
                 </>
               )}
 
-              <Section label="Create new workspace from…" />
+              <Section label="Create new workspace from…" order={2} />
               {noContext && (
                 <div style={{ padding: "2px 18px 8px", fontFamily: "var(--sans)", fontSize: 12, color: "var(--faint)" }}>
                   Pick a target repo (chip above) to enable workspace creation.
@@ -469,6 +519,7 @@ export function WorkspaceCommand() {
                 );
               })}
 
+              {describing && <ThinkingPanel />}
               {createError && (
                 <div style={{ margin: "8px 18px 0", color: "var(--err)", fontFamily: "var(--sans)", fontSize: 12 }}>{createError}</div>
               )}
@@ -477,6 +528,19 @@ export function WorkspaceCommand() {
             <div style={{ display: "flex", alignItems: "center", gap: 18, padding: "10px 18px", borderTop: "1px solid var(--line)", fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>
               <span><span style={{ color: "var(--acd)" }}>↵</span> create / switch</span>
               <span><span style={{ color: "var(--acd)" }}>⇥</span> edit scope first</span>
+              <span style={{ color: describing ? "var(--ac)" : undefined, transition: "color .2s var(--ease-out-soft)" }}>
+                <span
+                  className={describing ? "cmd-think" : undefined}
+                  style={{
+                    display: "inline-block",
+                    color: describing ? "var(--ac)" : "var(--acd)",
+                    animation: describing ? "cmdThink 1.4s var(--ease-scan) infinite" : undefined,
+                  }}
+                >
+                  ⌘↵
+                </span>{" "}
+                create with AI
+              </span>
               <span style={{ marginLeft: "auto" }}><span style={{ color: "var(--acd)" }}>↑↓</span> navigate</span>
             </div>
           </>
@@ -486,9 +550,74 @@ export function WorkspaceCommand() {
   );
 }
 
-function Section({ label }: { label: string }) {
+// Shown while the two AI calls (title + branch) are in flight. Deliberately
+// modest: there's no real title/branch yet, so this stays an honest status
+// beat (breathing ✦, blinking terminal cursor) rather than faking a preview.
+// The signature "materialize" moment is the payoff at ThinkingReveal below,
+// played once real data exists — see WorkspaceScopeForm's describe-source
+// fields. The exact status copy is preserved verbatim (asserted by
+// WorkspaceCommand.cov.test.tsx). Motion is transform/opacity only;
+// prefers-reduced-motion strips the loops (tokens.css).
+function ThinkingPanel() {
   return (
-    <div style={{ padding: "9px 18px 5px", fontFamily: "var(--sans)", fontSize: 10, letterSpacing: ".09em", textTransform: "uppercase", color: "var(--faint)" }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        margin: "8px 18px 0",
+        animation: "cmdRise .22s var(--ease-out-soft) both",
+      }}
+    >
+      <span
+        className="cmd-think"
+        aria-hidden
+        style={{
+          color: "var(--acd)",
+          fontSize: 13,
+          lineHeight: 1,
+          display: "inline-block",
+          animation: "cmdThink 1.4s var(--ease-scan) infinite",
+        }}
+      >
+        ✦
+      </span>
+      <span role="status" style={{ fontFamily: "var(--sans)", fontSize: 12, color: "var(--dim)" }}>
+        Asking Claude for a title and branch name…
+      </span>
+      <span
+        aria-hidden
+        style={{
+          color: "var(--ac)",
+          fontFamily: "var(--mono)",
+          fontSize: 12,
+          marginLeft: -3,
+          animation: "blink 1.1s step-end infinite",
+        }}
+      >
+        ▍
+      </span>
+    </div>
+  );
+}
+
+// `order` staggers the section entrance so the palette reads as unfolding
+// top-down. The animation sits on a stable DOM node (same position across
+// re-renders), so it fires on mount / when a section appears — not on every
+// keystroke. `both` keeps the pre-delay frame at opacity 0 (no flash).
+function Section({ label, order = 0 }: { label: string; order?: number }) {
+  return (
+    <div
+      style={{
+        padding: "9px 18px 5px",
+        fontFamily: "var(--sans)",
+        fontSize: 10,
+        letterSpacing: ".09em",
+        textTransform: "uppercase",
+        color: "var(--faint)",
+        animation: `cmdRise .26s var(--ease-out-soft) ${order * 0.045}s both`,
+      }}
+    >
       {label}
     </div>
   );
@@ -521,6 +650,11 @@ function Row({
         cursor: dim ? "default" : "pointer",
         background: active ? "color-mix(in oklab, var(--ac) 9%, transparent)" : "transparent",
         borderLeft: `2px solid ${active ? "var(--ac)" : "transparent"}`,
+        // The active row slides 2px toward its accent rail instead of snapping.
+        // transform + background/border only — cheap on WebKit, no layout.
+        transform: active ? "translateX(2px)" : "translateX(0)",
+        transition:
+          "background .15s var(--ease-out-soft), border-color .15s var(--ease-out-soft), transform .15s var(--ease-out-soft)",
       }}
     >
       {children}

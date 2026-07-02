@@ -444,6 +444,21 @@ function parseAi(raw: string): { name: string; reasoning: string } {
   }
 }
 
+const TITLE_SYSTEM =
+  "You name workspaces. Given a plain-language description of some work, reply with ONLY a short, " +
+  "concise workspace title (a few words, sentence case, no trailing punctuation, no quotes, no markdown) — nothing else.";
+
+/**
+ * Turn a plain-language description into a short workspace title via Claude.
+ * Throws {@link NoKeyError} when no API key is set. Pure passthrough over
+ * {@link claudeText} — trims the response and strips wrapping quotes the model
+ * sometimes adds.
+ */
+export async function suggestWorkspaceTitle(description: string, model: string): Promise<string> {
+  const raw = await claudeText(TITLE_SYSTEM, description, model);
+  return raw.trim().replace(/^["']|["']$/g, "");
+}
+
 /** Run the authoritative validator and package the result. */
 async function finalize(name: string, repoDir: string): Promise<ResolvedName> {
   const check = await validateBranchNameBackend(repoDir, name);

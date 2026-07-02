@@ -24,6 +24,23 @@
   --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: "Geist", system-ui, -apple-system, sans-serif;
 
+  /* Motion vocabulary — the shared language of the ⌘K creation flow. Three
+     durations, three easings, one stagger; everything in the flow draws from
+     this set so the motion reads as one system, not fifteen.
+     --ease-out-soft: quiet entrances (same curve the palette opens with, popIn).
+     --ease-scan: the teal "thinking"/sweep curve (linear-ish inOut).
+     --ease-settle: THE signature curve — expo-out that overshoots to 1.02 then
+       settles. The single point of overshoot in the whole flow, spent only on
+       the materialize moment (panel landing + the line "locking" into place).
+       Everything else stays disciplined (out-soft / scan). */
+  --dur-micro: 160ms; /* hover, press, focus — reads as instant */
+  --dur-ui: 320ms; /* field entrances, panel settle */
+  --dur-signature: 560ms; /* the materialize gesture — breathes, doesn't drag */
+  --ease-out-soft: cubic-bezier(0.2, 0.72, 0.2, 1);
+  --ease-scan: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-settle: cubic-bezier(0.16, 1.02, 0.3, 1);
+  --stagger-reveal: 90ms; /* title → branch cascade */
+
   /* Responsive breakpoints — documentary only; CSS custom properties cannot be
      used inside @media conditions, so 840px appears literally in @media rules
      and in the matchMedia hook (useMediaQuery.ts). */
@@ -64,6 +81,89 @@
 @keyframes popIn {
   from { opacity: 0; transform: translateY(10px) scale(0.985); }
   to { opacity: 1; transform: none; }
+}
+
+/* ⌘K creation flow — the "machine is thinking, then materializes its answer"
+   moment + staggered entrance. All animate transform/opacity only
+   (GPU-friendly, WebKit/WKWebView-safe). */
+
+/* Staggered row/section entrance: a small lift that reads as the palette
+   "unfolding". Paired with an inline animation-delay indexed per row. */
+@keyframes cmdRise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The ✦ mark breathes while the AI call is in flight — a contained accent
+   pulse, not a spinner. */
+@keyframes cmdThink {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
+}
+
+/* The signature "materialize" gesture, in three linked layers played as one
+   timeline when the AI result lands in the scope form.
+
+   LAYER 1 — the panel lands. The whole scope form arrives with a settle
+   (scale + lift) on --ease-settle, the single overshoot in the flow: the
+   machine's answer doesn't slide in, it drops into place. */
+@keyframes cmdFormLand {
+  from { opacity: 0; transform: translateY(9px) scale(0.975); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: none; }
+}
+
+/* LAYER 2 — the cover wipe. An opaque cover (the dialog's own --win, so it
+   reads as concealment, never a skeleton) shrinks away via transform: scaleX
+   only (origin right) — the glyphs never distort, the cover moves. Now driven
+   by --ease-settle so the line accelerates then locks, and its leading edge
+   carries the cursor (see cmdCoverEdge). */
+@keyframes cmdCoverWipe {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+/* The cover's right edge is a teal cursor that rides ahead of the revealed
+   text, then flares brighter and thicker for one beat as the line "locks" —
+   the tactile clack of the answer settling. Keyed to finish with the wipe. */
+@keyframes cmdCoverEdge {
+  0% { border-right-color: var(--acd); box-shadow: 0 0 0 0 transparent; }
+  55% { border-right-color: var(--ac); box-shadow: -1px 0 8px -3px var(--ac); }
+  /* the "lock": a brief brighter flare as the line finishes settling */
+  88% { border-right-color: var(--ac); box-shadow: -1px 0 14px -1px var(--ac); }
+  100% { border-right-color: transparent; box-shadow: 0 0 0 0 transparent; }
+}
+
+/* LAYER 3 — a single accent glow sweeps the field as it materializes, then is
+   gone. Energy on arrival, no loop. A soft radial highlight travels L→R behind
+   the freshly-revealed text (masked to the field via overflow). */
+@keyframes cmdRevealSweep {
+  0% { opacity: 0; transform: translateX(-30%); }
+  35% { opacity: 0.7; }
+  100% { opacity: 0; transform: translateX(220%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Kill the looping breathing mark outright (the global reduce rule only
+     shortens duration; a 0.001ms infinite loop would still churn). */
+  .cmd-think { animation: none !important; }
+  /* Reduced motion keeps the flow legible without kinetic flourish: the panel
+     appears with a plain, near-instant opacity fade (no land/overshoot), the
+     reveal cover skips straight to the resolved state, and the sweep glow +
+     cursor-edge flare are suppressed. The result is a dignified static answer,
+     never a broken layout. */
+  .cmd-form-land {
+    animation: fadeIn 0.14s ease both !important;
+  }
+  .cmd-reveal-cover {
+    animation: none !important;
+    transform: scaleX(0) !important;
+    opacity: 0 !important;
+  }
+  .cmd-reveal-sweep {
+    animation: none !important;
+    opacity: 0 !important;
+  }
 }
 
 ::selection {
