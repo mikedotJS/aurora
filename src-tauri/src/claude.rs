@@ -13,6 +13,36 @@ fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(SERVICE, ACCOUNT).map_err(|e| e.to_string())
 }
 
+/// In debug builds only, load `KEY=VALUE` pairs from a `.env` file (searching
+/// the current dir and its parents) into the process environment, without
+/// overriding vars that are already set. This lets `tauri dev` pick up
+/// `ANTHROPIC_API_KEY` from a gitignored `.env` at the workspace root so the
+/// dev build never has to touch the OS keychain — see `key_get`.
+#[cfg(debug_assertions)]
+pub fn load_dotenv() {
+    let mut dir = std::env::current_dir().ok();
+    while let Some(d) = dir {
+        let candidate = d.join(".env");
+        if let Ok(buf) = std::fs::read_to_string(&candidate) {
+            for line in buf.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some((k, v)) = line.split_once('=') {
+                    let k = k.trim();
+                    let v = v.trim().trim_matches('"').trim_matches('\'');
+                    if !k.is_empty() && std::env::var_os(k).is_none() {
+                        std::env::set_var(k, v);
+                    }
+                }
+            }
+            return;
+        }
+        dir = d.parent().map(|p| p.to_path_buf());
+    }
+}
+
 /// Store the Anthropic API key in the keychain.
 #[tauri::command]
 pub fn key_set(key: String) -> Result<(), String> {
@@ -20,6 +50,19 @@ pub fn key_set(key: String) -> Result<(), String> {
 }
 
 /// Read the stored key, if any (used internally + to render masked previews).
+///
+/// In debug builds we deliberately never touch the OS keychain: the dev binary
+/// is ad-hoc signed and its code hash changes on every rebuild, so macOS treats
+/// each run as a new app and re-prompts for keychain access. Instead the key is
+/// read from the `ANTHROPIC_API_KEY` env var, which keeps `tauri dev` prompt-free.
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub fn key_get() -> Result<Option<String>, String> {
+    Ok(std::env::var("ANTHROPIC_API_KEY").ok().filter(|k| !k.is_empty()))
+}
+
+/// Read the stored key, if any (used internally + to render masked previews).
+#[cfg(not(debug_assertions))]
 #[tauri::command]
 pub fn key_get() -> Result<Option<String>, String> {
     match entry()?.get_password() {
