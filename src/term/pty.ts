@@ -14,6 +14,20 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
  */
 export type ServerStatus = "capturing" | "alive" | "dead" | "uncaptured";
 
+/**
+ * Generic per-pane foreground signal (sticky-running-server-tabs, tier 1):
+ * `running` is true when the PTY's foreground process group currently differs
+ * from its shell's (a foreground child — vite, next dev, npm install, …).
+ * `pgid` is the raw foreground pgid the check was based on, mostly for debugging.
+ */
+export interface ForegroundState {
+  running: boolean;
+  pgid: number | null;
+}
+
+/** SIGINT's value on macOS/BSD/Linux (Aurora is macOS-only). Used by `pty.signalServer`. */
+export const SIGINT = 2;
+
 export interface SpawnResult {
   id: string;
   shell: string;
@@ -120,6 +134,26 @@ class PtyHub {
    */
   serverStatus(id: string): Promise<ServerStatus> {
     return invoke<ServerStatus>("pty_server_status", { id });
+  }
+
+  /**
+   * Generic per-pane foreground probe (tier 1 of the combined running signal).
+   * Reads the PTY's foreground process group vs the shell's — command-agnostic,
+   * unlike serverStatus() which only reports on a *captured* detached group.
+   */
+  foregroundState(id: string): Promise<ForegroundState> {
+    return invoke<ForegroundState>("pty_foreground_state", { id });
+  }
+
+  /**
+   * Signal the session's captured server process group directly (Ctrl+C for a
+   * detached-but-captured server, where the PTY foreground is the shell so a
+   * raw `\x03` would miss the real target). Returns false — not a rejection —
+   * when there's nothing live to signal (uncaptured or already dead); callers
+   * must not report success in that case.
+   */
+  signalServer(id: string, signal: number): Promise<boolean> {
+    return invoke<boolean>("pty_signal_server", { id, signal });
   }
 }
 

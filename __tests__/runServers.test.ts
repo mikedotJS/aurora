@@ -61,6 +61,8 @@ let _notifLog: any[] = [];
 let _activeWs = "";
 let _selectTabCalls: number[] = [];
 let _serverStatus: Record<string, string> = {};
+// Runtime-only per-pane foreground signal (sticky-running-server-tabs / running.ts poll).
+let _foregroundState: Record<string, { running: boolean; pgid: number | null }> = {};
 // When true, _newPane creates panes that are already ready (ptyId set).
 // Lets runWhenReady fire send() synchronously — needed for command-content assertions.
 let _panesReadyOnCreate = false;
@@ -192,6 +194,16 @@ const _getState = () => ({
     _serverStatus = { ..._serverStatus };
     for (const id of ptyIds) delete (_serverStatus as any)[id];
   },
+  // Runtime-only per-pane foreground signal (sticky-running-server-tabs, tier 1 —
+  // src/lib/running.ts's generalised poll writes/reads this alongside serverStatus).
+  foregroundState: _foregroundState,
+  setForegroundState: (ptyId: string, s: { running: boolean; pgid: number | null }) => {
+    _foregroundState = { ..._foregroundState, [ptyId]: s };
+  },
+  clearForegroundState: (ptyIds: string[]) => {
+    _foregroundState = { ..._foregroundState };
+    for (const id of ptyIds) delete (_foregroundState as any)[id];
+  },
   // Extra no-ops for completeness (scripts.ts may call these via other paths)
   appendOutput: () => {},
   markCapture: () => {},
@@ -201,6 +213,12 @@ const _getState = () => ({
 const ptyKillMock = mock((): Promise<void> => Promise.resolve());
 const ptyCaptureServerPgidMock = mock((_id: string): Promise<void> => Promise.resolve());
 const ptyServerStatusMock = mock((_id: string): Promise<string> => Promise.resolve("alive"));
+// running.ts's generalised poll (D8, re-exported here as ensureServerPoll/stopPoll)
+// probes BOTH serverStatus and foregroundState per pane each tick — mock both leaves.
+const ptyForegroundStateMock = mock(
+  (_id: string): Promise<{ running: boolean; pgid: number | null }> =>
+    Promise.resolve({ running: false, pgid: null }),
+);
 
 // ── All mock.module() calls must come before any dynamic import ───────────────
 
@@ -236,6 +254,7 @@ mock.module("../src/term/pty", () => ({
     spawn: () => Promise.resolve(),
     captureServerPgid: ptyCaptureServerPgidMock,
     serverStatus: ptyServerStatusMock,
+    foregroundState: ptyForegroundStateMock,
   },
 }));
 
@@ -310,6 +329,7 @@ beforeEach(() => {
   _notifSeq = 0;
   _selectTabCalls = [];
   _serverStatus = {};
+  _foregroundState = {};
   _panesReadyOnCreate = false;
   ptyKillMock.mockReset();
   ptyKillMock.mockImplementation(() => Promise.resolve());
@@ -317,6 +337,8 @@ beforeEach(() => {
   ptyCaptureServerPgidMock.mockImplementation(() => Promise.resolve());
   ptyServerStatusMock.mockReset();
   ptyServerStatusMock.mockImplementation(() => Promise.resolve("alive"));
+  ptyForegroundStateMock.mockReset();
+  ptyForegroundStateMock.mockImplementation(() => Promise.resolve({ running: false, pgid: null }));
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

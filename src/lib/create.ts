@@ -9,6 +9,7 @@ import { validateBranchNameBackend, listDir } from "./sys";
 import { runScript, runCommand } from "./scripts";
 import { getRepoConfig, type Preset } from "./repoConfig";
 import { presetCreateFields } from "./presets";
+import { materializeEnvFiles, type EnvFileSpec } from "./envFiles";
 
 const PORT_STEP = 10;
 
@@ -70,6 +71,8 @@ export interface CreateSpec {
   env?: Record<string, string>;
   /** "auto" → a distinct per-workspace offset; number → fixed. Exposed as $AURORA_PORT_OFFSET. */
   portOffset?: "auto" | number;
+  /** Per-workspace env files written into the fresh worktree on create (see lib/envFiles.ts). */
+  envFiles?: EnvFileSpec[];
 }
 
 export type CreateResult = { ok: true; wsId: string } | { ok: false; error: string };
@@ -189,6 +192,7 @@ export function buildCreateSpec(input: BuildCreateSpecInput): CreateSpec {
     jiraSync: input.jiraSync ?? false,
     env: fields?.env ?? {},
     portOffset: fields?.portOffset ?? "auto",
+    envFiles: fields?.envFiles ?? [],
   };
 }
 
@@ -210,8 +214,34 @@ export async function runCreate(spec: CreateSpec): Promise<CreateResult> {
   // to the panes as $AURORA_PORT_OFFSET. The offset is the sole port primitive —
   // no base port, no automatic PORT injection. Generated scripts bind their own
   // default+offset per server (e.g. `vite --port $((5173 + AURORA_PORT_OFFSET))`).
+  // $AURORA_WORKSPACE_NAME (the worktree dir leaf) is also exported for
+  // namespacing (Docker compose project, DB names) — parity with Conductor's
+  // CONDUCTOR_WORKSPACE_NAME.
   const offset = allocOffset(spec.repoRoot, spec.portOffset);
-  const env: Record<string, string> = { ...(spec.env ?? {}), AURORA_PORT_OFFSET: String(offset) };
+  const workspaceName = dir.split("/").filter(Boolean).pop() ?? spec.branch;
+  const env: Record<string, string> = {
+    ...(spec.env ?? {}),
+    AURORA_PORT_OFFSET: String(offset),
+    AURORA_WORKSPACE_NAME: workspaceName,
+  };
+
+  // Materialize any per-workspace env files into the fresh worktree BEFORE panes
+  // spawn / scripts run, so a service that reads its port from a file (not a
+  // `$((BASE + AURORA_PORT_OFFSET))` command) starts on the allocated port.
+  // Best-effort: a write failure is surfaced but never aborts the workspace.
+  if (spec.envFiles?.length) {
+    const results = await materializeEnvFiles(dir, spec.envFiles, { offset, workspace: workspaceName });
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length) {
+      useStore.getState().notify({
+        color: "var(--warn)",
+        icon: "⚠",
+        headline: `${failed.length} env file${failed.length > 1 ? "s" : ""} not written`,
+        sub: failed.map((f) => `${f.path}: ${f.error}`).join(" · "),
+        repo: spec.repoRoot,
+      });
+    }
+  }
 
   let wsId: string;
   try {

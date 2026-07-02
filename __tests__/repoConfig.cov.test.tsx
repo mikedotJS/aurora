@@ -86,6 +86,7 @@ describe("migrate", () => {
       env: {},
       baseOverride: null,
       portOffset: "auto",
+      envFiles: [],
       jiraSync: false,
     });
     expect("agent" in out.presets[0]).toBe(false);

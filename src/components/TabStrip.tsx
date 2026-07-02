@@ -4,6 +4,7 @@
 import { useRef, useState, useEffect } from "react";
 import { useStore, activeWorkspace, type Group } from "../state/store";
 import { shortenCwd } from "../lib/sys";
+import { tabRunning, tabRunningLabel } from "../lib/running";
 
 function tabTitle(g: Group, home: string): string {
   const named = g.name?.trim();
@@ -18,6 +19,11 @@ export function TabStrip() {
   const tabs = useStore((s) => activeWorkspace(s)?.tabs ?? []);
   const active = useStore((s) => activeWorkspace(s)?.active ?? 0);
   const home = useStore((s) => s.home);
+  // Runtime-only maps (never persisted) feeding the sticky-running-server-tabs
+  // badge — read as-is (no fresh array/object built in the selector itself, so
+  // this can't repeat the Zustand black-screen selector crash).
+  const serverStatus = useStore((s) => s.serverStatus);
+  const foregroundState = useStore((s) => s.foregroundState);
   const selectTab = useStore((s) => s.selectTab);
   const closeTab = useStore((s) => s.closeTab);
   const newTab = useStore((s) => s.newTab);
@@ -65,6 +71,7 @@ export function TabStrip() {
       {tabs.map((tab, i) => {
         const isActive = i === active;
         const isDrop = dropTarget === i;
+        const running = tabRunning(tab, serverStatus, foregroundState);
         return (
           <div
             key={tab.id}
@@ -163,6 +170,48 @@ export function TabStrip() {
             >
               {tabTitle(tab, home)}
             </span>
+            {running && (
+              <span
+                title={`process running — ${tabRunningLabel(tab, serverStatus, foregroundState)}`}
+                style={{
+                  flex: "0 0 auto",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 9,
+                  color: "var(--warn)",
+                  // Faint warn-tinted fill so the live state reads as a *filled*
+                  // chip — deliberately distinct from the unfilled, structural
+                  // split-count badge below it.
+                  background: "color-mix(in oklab, var(--warn) 12%, transparent)",
+                  border: "1px solid color-mix(in oklab, var(--warn) 40%, var(--line))",
+                  borderRadius: 4,
+                  padding: "0 6px 0 5px",
+                  height: 14,
+                  lineHeight: 1,
+                  maxWidth: 110,
+                  overflow: "hidden",
+                }}
+              >
+                {/* Breathing dot (real round span so the glow renders) — the one
+                    element on the cool slate tab strip that signals "alive now".
+                    pulse ends at opacity 1, so reduced-motion leaves it visible. */}
+                <span
+                  style={{
+                    flex: "0 0 auto",
+                    width: 5,
+                    height: 5,
+                    borderRadius: "50%",
+                    background: "var(--warn)",
+                    boxShadow: "0 0 5px var(--warn)",
+                    animation: "pulse 1.8s ease-in-out infinite",
+                  }}
+                />
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {tabRunningLabel(tab, serverStatus, foregroundState)}
+                </span>
+              </span>
+            )}
             {tab.panes.length > 1 && (
               <span
                 title={`${tab.panes.length} panes`}

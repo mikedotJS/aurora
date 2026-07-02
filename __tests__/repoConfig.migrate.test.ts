@@ -101,10 +101,10 @@ function makeV4Config() {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("migrate() — v4 → current", () => {
-  it("bumps version to CONFIG_VERSION (6)", () => {
+  it("bumps version to CONFIG_VERSION (7)", () => {
     const result = migrate(makeV4Config());
     expect(result.version).toBe(CONFIG_VERSION);
-    expect(CONFIG_VERSION).toBe(6);
+    expect(CONFIG_VERSION).toBe(7);
   });
 
   it("strips dead key: lifecycle (top-level)", () => {

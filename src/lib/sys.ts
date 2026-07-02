@@ -20,6 +20,15 @@ export function readTextFile(path: string, maxBytes = 8192): Promise<string | nu
   return invoke<string>("read_text_file", { path, maxBytes }).catch(() => null);
 }
 
+/**
+ * Write `content` to `path`, creating parent dirs. Rejects (does not swallow) on
+ * failure so callers can surface the error. Used to materialize per-workspace
+ * env files on worktree create (see lib/envFiles.ts).
+ */
+export function writeTextFile(path: string, content: string): Promise<void> {
+  return invoke<void>("write_text_file", { path, content });
+}
+
 export function gitBranch(cwd: string): Promise<string | null> {
   return invoke<string | null>("git_branch", { cwd }).catch(() => null);
 }

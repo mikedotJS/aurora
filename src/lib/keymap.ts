@@ -3,13 +3,14 @@
 // mode) and form fields keep their own keystrokes.
 
 import { useStore, activePane, activeGroup, activeWorkspace, findPane, type PaneState } from "../state/store";
-import { pty } from "../term/pty";
+import { pty, SIGINT } from "../term/pty";
 import { claudeSuggest, NoKeyError } from "../ai/suggest";
 import { typoFix, isInteractive, splitPathToken, folderCandidates, commonPrefix, type PathToken } from "./commands";
 import { keySet, keyDelete } from "./keychain";
 import { resolveCd, listDir } from "./sys";
 import { gatherProjectContext, formatProjectContext } from "./projectContext";
 import { runScript } from "./scripts";
+import { ensurePtyPoll, paneRunning } from "./running";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 
 function focusRoot() {
@@ -122,6 +123,25 @@ function runInShell(pane: PaneState, cmd: string) {
   if (isInteractive(trimmed)) s.setRawMode(pane.id, true);
   if (pane.ptyId) {
     pty.write(pane.ptyId, cmd + "\n");
+    // sticky-running-server-tabs: capture this command's process group too, not
+    // just the dedicated "Run servers" flow — a typed `nx serve --no-tui` (or
+    // any other command that detaches into its own pgid) needs the same
+    // fire-and-forget sampler so its running state + Ctrl+C can target it once
+    // the prompt returns. Ordinary commands resolve to "uncaptured" (no-op).
+    //
+    // Code-review fix (#1, MAJEUR): only re-arm the sampler when the poll
+    // hasn't already got a confirmed-alive capture for this ptyId. Without this
+    // guard, running a SECOND command in the same pane (e.g. hitting Enter on
+    // an already-detached `nx serve`) re-triggered a Rust-side `Pending` reset
+    // that clobbered the still-alive `Found(pgid)` capture — losing the only
+    // handle Ctrl+C/Stop has on the detached server (false "Couldn't reach the
+    // process"). The Rust side (`pty_capture_server_pgid`) now also refuses to
+    // re-arm over a live `Found` capture, so this is defense-in-depth: it just
+    // avoids the redundant round-trip in the common case.
+    if (s.serverStatus[pane.ptyId] !== "alive") {
+      pty.captureServerPgid(pane.ptyId).catch(() => {});
+    }
+    ensurePtyPoll();
   } else {
     // No live shell (e.g. a boot-time spawn was lost) — don't drop the command
     // silently. Tell the user and kick off a respawn so the pane self-heals.
@@ -129,6 +149,51 @@ function runInShell(pane: PaneState, cmd: string) {
     s.endBlock(pane.id, 1);
     s.respawnPane(pane.id);
   }
+}
+
+/**
+ * Ctrl+C, routed by what's actually running (sticky-running-server-tabs):
+ *  - not running, or the running process IS the PTY foreground → \x03 (the tty
+ *    already delivers SIGINT to whichever group holds the foreground — correct
+ *    for an idle shell AND for a foreground server alike).
+ *  - a detached-but-captured server (PTY foreground is the shell, captured
+ *    group still alive) → killpg(pgid, SIGINT) via pty.signalServer, since a
+ *    raw \x03 would hit the shell instead of the real target.
+ * Escalation policy (design.md D-CtrlC): a single SIGINT, not SIGINT→SIGTERM/
+ * SIGKILL — matches the existing Stop/⌘Q first step and keeps a second Ctrl+C
+ * press meaning "try again", not "escalate to a harder kill".
+ */
+function routeCtrlC(pane: PaneState) {
+  if (!pane.ptyId) return;
+  const ptyId = pane.ptyId;
+  const st = useStore.getState();
+  const fg = st.foregroundState[ptyId];
+  const status = st.serverStatus[ptyId];
+  if (fg?.running) {
+    // Foreground child holds the tty — the kernel already routes \x03 to it.
+    pty.write(ptyId, "\x03");
+    return;
+  }
+  if (!paneRunning(pane, status, fg)) {
+    // Idle shell (or nothing detected as running) — plain \x03, unchanged behavior.
+    pty.write(ptyId, "\x03");
+    return;
+  }
+  // Running, but NOT the PTY foreground -> a detached server. Signal its
+  // captured group directly; the Rust side re-checks liveness immediately
+  // before signalling (recycled-pgid guard) and reports back honestly.
+  pty.signalServer(ptyId, SIGINT).then((ok) => {
+    if (ok) return;
+    // Uncaptured or already dead — do NOT claim success (spec: never falsely
+    // report the process as stopped).
+    useStore.getState().notify({
+      color: "var(--warn)",
+      icon: "⚠",
+      headline: "Couldn't reach the process",
+      sub: "Ctrl+C had no live captured process group to signal.",
+      repo: "",
+    });
+  });
 }
 
 function submit(pane: PaneState, value: string) {
@@ -362,11 +427,21 @@ export function handleKeyDown(e: KeyboardEvent) {
       if (pane.ptyId) pty.write(pane.ptyId, "\x0c");
       return;
     }
+    if (k === "c" || k === "C") {
+      // sticky-running-server-tabs: route by WHAT is actually running, not just
+      // "write \x03 and hope" — a foreground child still gets \x03 (the tty
+      // already delivers SIGINT correctly); a detached-but-captured server (the
+      // shell has the PTY foreground back) gets killpg(pgid, SIGINT) instead,
+      // the same group Stop/⌘Q already reap. See routeCtrlC below.
+      e.preventDefault();
+      s.setInput(pane.id, "");
+      routeCtrlC(pane);
+      return;
+    }
     if (/^[a-z]$/i.test(k)) {
       e.preventDefault();
       const code = k.toLowerCase().charCodeAt(0) - 96; // ^A=1 … ^Z=26
       if (pane.ptyId) pty.write(pane.ptyId, String.fromCharCode(code));
-      if (k === "c" || k === "C") s.setInput(pane.id, "");
       return;
     }
     return;
