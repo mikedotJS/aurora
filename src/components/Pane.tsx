@@ -388,7 +388,12 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
             </div>
           )}
 
-          {isActive && pane.completion && (
+          {isActive && pane.cdSuggest && (
+            <CdSuggestList items={pane.cdSuggest.items} index={pane.cdSuggest.index} home={home} paneId={pane.id} />
+          )}
+          {/* cdSuggest and completion never open at once (decision C — store never
+              sets both), so this is a plain else-if in practice, not a stacking risk. */}
+          {isActive && !pane.cdSuggest && pane.completion && (
             <CompletionList items={pane.completion.items} index={pane.completion.index} />
           )}
 
@@ -624,6 +629,143 @@ function CompletionList({ items, index }: { items: { name: string; is_dir: boole
         </span>
         <span>
           <span style={{ color: "var(--acd)" }}>⇥/↵</span> select
+        </span>
+        <span>
+          <span style={{ color: "var(--acd)" }}>esc</span> dismiss
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const CD_SUGGEST_LIMIT = 9;
+/** How many leading rows get an ⌥N badge (⌥1..⌥9 — keyboard row range). */
+const CD_SUGGEST_BADGES = 9;
+/** Max visible chars for a suggestion path before middle-truncating. */
+const CD_SUGGEST_PATH_MAX = 46;
+
+/**
+ * Truncate a path in the middle rather than the end, so the last (most
+ * identifying) segment always stays legible — e.g. `~/Dev/aur…orkspaces/x`
+ * instead of losing the tail to a trailing "…". Keeps a bit more budget on
+ * the tail than the head, since the final segment is what disambiguates.
+ */
+function truncateMiddle(path: string, max: number): string {
+  if (path.length <= max) return path;
+  const room = max - 1; // reserve 1 char for the ellipsis
+  const tail = Math.ceil(room * 0.6);
+  const head = room - tail;
+  return path.slice(0, head) + "…" + path.slice(path.length - tail);
+}
+
+/**
+ * The `cd ` frecency popover (zoxide-like): same "rise" card chrome as
+ * CompletionList, but its rows are clickable and carry an ⌥N direct-accept
+ * badge. Never shown at the same time as CompletionList (store-level decision
+ * C — see Pane's render site).
+ */
+function CdSuggestList({
+  items,
+  index,
+  home,
+  paneId,
+}: {
+  items: string[];
+  index: number;
+  home: string;
+  paneId: number;
+}) {
+  const start = Math.min(Math.max(0, index - CD_SUGGEST_LIMIT + 1), Math.max(0, items.length - CD_SUGGEST_LIMIT));
+  const shown = items.slice(start, start + CD_SUGGEST_LIMIT);
+  const hiddenAfter = items.length - (start + shown.length);
+  return (
+    <div
+      style={{
+        margin: "2px 0 10px",
+        border: "1px solid color-mix(in oklab, var(--ac) 32%, var(--line))",
+        borderLeft: "2px solid var(--ac)",
+        borderRadius: 8,
+        background: "color-mix(in oklab, var(--ac) 8%, transparent)",
+        padding: "8px 6px 6px",
+        animation: "rise .13s ease",
+        boxShadow: "0 8px 30px -16px color-mix(in oklab, var(--ac) 80%, transparent)",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          fontFamily: "var(--sans)",
+          fontSize: 11,
+          letterSpacing: ".04em",
+          color: "var(--acd)",
+          textTransform: "uppercase",
+          margin: "0 8px 6px",
+        }}
+      >
+        <span style={{ color: "var(--ac)" }}>↝</span>frequent dirs
+        <span style={{ color: "var(--faint)" }}>· {items.length}</span>
+      </div>
+      {start > 0 && (
+        <div style={{ padding: "0 10px 2px", fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>↑ {start} more…</div>
+      )}
+      {shown.map((path, i) => {
+        const rowIndex = start + i;
+        const active = rowIndex === index;
+        const badge = rowIndex < CD_SUGGEST_BADGES ? rowIndex + 1 : null;
+        const shortPath = truncateMiddle(shortenCwd(path, home), CD_SUGGEST_PATH_MAX);
+        return (
+          <div
+            key={path}
+            className={active ? "cd-suggest-row cd-suggest-row--active" : "cd-suggest-row"}
+            title={path}
+            onMouseDown={(e) => {
+              // mousedown (not click) so this fires before the scrollback's own
+              // onMouseDown refocuses the root and the caret moves under it.
+              e.preventDefault();
+              useStore.getState().acceptCdSuggest(paneId, rowIndex);
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              padding: "3px 10px",
+              borderRadius: 6,
+              fontSize: 14,
+              cursor: "pointer",
+              color: active ? "var(--fg)" : "var(--dim)",
+            }}
+          >
+            <span style={{ overflow: "hidden", whiteSpace: "nowrap", minWidth: 0 }}>{shortPath}</span>
+            {badge != null && (
+              <span className={active ? "cd-suggest-badge cd-suggest-badge--active" : "cd-suggest-badge"}>⌥{badge}</span>
+            )}
+          </div>
+        );
+      })}
+      {hiddenAfter > 0 && (
+        <div style={{ padding: "2px 10px 0", fontFamily: "var(--sans)", fontSize: 11, color: "var(--faint)" }}>↓ {hiddenAfter} more…</div>
+      )}
+      <div
+        style={{
+          margin: "7px 8px 0",
+          fontFamily: "var(--sans)",
+          fontSize: 11,
+          color: "var(--faint)",
+          display: "flex",
+          gap: 16,
+        }}
+      >
+        <span>
+          <span style={{ color: "var(--acd)" }}>↑↓</span> move
+        </span>
+        <span>
+          <span style={{ color: "var(--acd)" }}>⇥/↵</span> select
+        </span>
+        <span>
+          <span style={{ color: "var(--acd)" }}>⌥N</span> jump
         </span>
         <span>
           <span style={{ color: "var(--acd)" }}>esc</span> dismiss

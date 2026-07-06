@@ -36,11 +36,16 @@ export function WorkspaceScopeForm({
   repo,
   source,
   initial,
+  justResolved,
   onCancel,
 }: {
   repo: { root: string; name: string; defaultBranch: string };
   source: CreateSource;
   initial: ScopeInitial;
+  // True only right after the ⌘⏎ "describe" flow resolved title/branch via AI.
+  // Plays a one-shot reveal on those two fields, materializing the real,
+  // just-arrived text — see RevealCover below.
+  justResolved?: boolean;
   onCancel: () => void;
 }) {
   const closeCommand = useStore((s) => s.closeCommand);
@@ -79,6 +84,7 @@ export function WorkspaceScopeForm({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [title, setTitle] = useState(initial.title);
 
   const issue: NameIssue = useMemo(
     () => ({ key: initial.issueKey ?? null, type: initial.issueType ?? null, title: initial.title }),
@@ -94,11 +100,15 @@ export function WorkspaceScopeForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [repo.root]);
 
-  // Resolve the configured branch name once for issue-backed sources (the user
-  // can still override). Falls back to whatever the palette prefilled.
+  // Resolve the configured branch name once for issue-backed (Jira) sources (the
+  // user can still override). Falls back to whatever the palette prefilled.
+  // "describe" is excluded: openDescribeForm() already resolved + validated an
+  // AI-generated branch via the "ai" naming source before the form ever opened —
+  // re-resolving here with the repo's *configured* branchNaming (default: manual
+  // "{key}/{slug}") would clobber it with a bare slug (no issue key to key off).
   useEffect(() => {
     if (branchTouched) return;
-    if (!initial.issueKey && source !== "describe") return;
+    if (!initial.issueKey || source === "describe") return;
     let live = true;
     resolveBranchName(cfg.defaults.branchNaming, issue, repo.root, model).then((r) => {
       if (live && !branchTouched && r.name) setBranch(r.name);
@@ -160,7 +170,7 @@ export function WorkspaceScopeForm({
       source,
       preset: selected ?? null,
       branch: branch.trim(),
-      title: initial.title,
+      title: title.trim(),
       baseBranch: base,
       // Pass raw string — buildCreateSpec normalises "" → null.
       scriptName,
@@ -207,7 +217,18 @@ export function WorkspaceScopeForm({
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column" }}>
+    <div
+      // The signature "land": on the AI handoff the whole scope panel drops into
+      // place with a single settle (--ease-settle overshoot), so the machine's
+      // answer arrives as one gesture rather than swapping in. Other sources
+      // (Jira/branch/clone) open without it — the boldness is spent only here.
+      className={justResolved ? "cmd-form-land" : undefined}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        animation: justResolved ? "cmdFormLand var(--dur-ui) var(--ease-settle) both" : undefined,
+      }}
+    >
       {/* header */}
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 18px", borderBottom: "1px solid var(--line)" }}>
         <span style={{ color: "var(--acd)", fontSize: 14 }}>＋</span>
@@ -228,10 +249,29 @@ export function WorkspaceScopeForm({
           </div>
         )}
 
+        {/* title — editable, AI-generated for "describe" (issue-backed sources keep
+            the read-only summary above; the title there is the issue's, not free text) */}
+        {source === "describe" && (
+          <div style={{ padding: "0 18px 4px" }}>
+            <div style={fieldLabel}>Title</div>
+            <div style={{ ...box, position: "relative" }}>
+              <span style={{ color: "var(--acd)" }}>✦</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                spellCheck={false}
+                autoComplete="off"
+                style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: "var(--fg)", fontFamily: "var(--sans)", fontSize: 12.5, padding: 0 }}
+              />
+              {justResolved && <RevealCover delay={0.14} />}
+            </div>
+          </div>
+        )}
+
         {/* branch */}
         <div style={{ padding: "8px 18px 4px" }}>
           <div style={fieldLabel}>Branch</div>
-          <div style={box}>
+          <div style={{ ...box, position: "relative" }}>
             <span style={{ color: "var(--acd)" }}>⎇</span>
             <input
               value={branch}
@@ -248,6 +288,7 @@ export function WorkspaceScopeForm({
                 {branchValid ? "✓" : "✕"}
               </span>
             )}
+            {justResolved && <RevealCover delay={source === "describe" ? 0.14 + STAGGER_S : 0.14} />}
           </div>
           {branchNote && (
             <div style={{ marginTop: 5, fontFamily: "var(--sans)", fontSize: 11, color: "var(--err)", lineHeight: 1.4 }}>{branchNote}</div>
@@ -379,6 +420,70 @@ export function WorkspaceScopeForm({
           {busy ? "Creating…" : "Create workspace"}
         </span>
       </div>
+    </div>
+  );
+}
+
+// Title→branch cascade offset, mirrored from --stagger-reveal (90ms) so the JS
+// delays and the CSS token can't drift. In seconds for the animation shorthand.
+const STAGGER_S = 0.09;
+
+// The signature "materialize" moment, layered. Over each just-arrived field
+// sits an opaque cover — the panel's own background (--win), so it reads as
+// concealment, never a skeleton — that shrinks away via transform: scaleX
+// (origin right), never touching the glyphs underneath. Two things ride with
+// the wipe, both keyed to --ease-settle / --dur-signature so the line
+// accelerates then LOCKS:
+//   • cmdCoverEdge — the right edge is a teal cursor that flares brighter and
+//     casts a brief glow as it reaches the end (the tactile "clack" of the
+//     line settling), then fades to transparent.
+//   • cmdRevealSweep — a soft accent glow sweeps L→R behind the text as it
+//     appears (energy on arrival), clipped to the field, gone in one pass.
+// One-shot: the cover unmounts itself after playing (onAnimationEnd) so it
+// never lingers over an editable field. `delay` cascades branch behind title.
+function RevealCover({ delay }: { delay: number }) {
+  const [done, setDone] = useState(false);
+  if (done) return null;
+  return (
+    <div
+      aria-hidden
+      // Clip the sweep glow to the field's rounded box so it can't bleed past
+      // the input border.
+      style={{ position: "absolute", inset: 0, borderRadius: 7, overflow: "hidden", pointerEvents: "none" }}
+    >
+      {/* LAYER 3: accent glow sweeping behind the text as it materializes. */}
+      <div
+        className="cmd-reveal-sweep"
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          left: 18,
+          width: "32%",
+          background:
+            "radial-gradient(closest-side, color-mix(in oklab, var(--ac) 20%, transparent), transparent)",
+          animation: `cmdRevealSweep var(--dur-signature) var(--ease-scan) ${delay}s both`,
+        }}
+      />
+      {/* LAYER 2: the cover + its riding cursor edge, unmounting on end. */}
+      <div
+        className="cmd-reveal-cover"
+        onAnimationEnd={(e) => {
+          // Only the wipe (transform) end unmounts; the edge/border animation
+          // finishes at the same time but guard on the longest to be safe.
+          if (e.animationName.startsWith("cmdCoverWipe")) setDone(true);
+        }}
+        style={{
+          position: "absolute",
+          inset: "-1px -1px -1px 22px", // clears the leading ✦/⎇ glyph column
+          background: "var(--win)",
+          transformOrigin: "right center",
+          borderRight: "1.5px solid var(--acd)",
+          animation:
+            `cmdCoverWipe var(--dur-signature) var(--ease-settle) ${delay}s both,` +
+            `cmdCoverEdge var(--dur-signature) var(--ease-settle) ${delay}s both`,
+        }}
+      />
     </div>
   );
 }

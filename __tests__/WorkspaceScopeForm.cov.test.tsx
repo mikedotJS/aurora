@@ -153,10 +153,23 @@ describe("preset auto-selection", () => {
 });
 
 describe("describe source", () => {
-  it("triggers the branch-name suggestion even without an issue key when source is 'describe'", async () => {
+  // The AI (openDescribeForm, in WorkspaceCommand) has already resolved + validator-
+  // checked the branch before the form ever mounts. The form must NOT re-resolve it
+  // via the repo's configured branchNaming (manual "{key}/{slug}" by default) — doing
+  // so would clobber the AI branch with a bare slug, since describe's NameIssue has
+  // no issue key. initial.branch must survive mount untouched.
+  it("does not re-resolve the branch via the repo's configured branchNaming — respects the AI-generated initial.branch", async () => {
     seedRepo({ presets: [presetFeature] });
-    renderForm("describe", { title: "Improve onboarding flow", branch: "placeholder" });
-    await waitFor(() => expect(screen.getByDisplayValue("improve-onboarding-flow")).toBeTruthy());
+    renderForm("describe", { title: "Improve onboarding flow", branch: "feat/improve-onboarding-flow" });
+    await waitFor(() => expect(screen.getByText("Create workspace")).toBeTruthy());
+    expect(screen.getByDisplayValue("feat/improve-onboarding-flow")).toBeTruthy();
+    expect(screen.queryByDisplayValue("improve-onboarding-flow")).toBeNull();
+  });
+
+  it("shows the title in an editable field, pre-filled from initial.title", () => {
+    seedRepo({ presets: [presetFeature] });
+    renderForm("describe", { title: "Improve onboarding flow", branch: "feat/improve-onboarding-flow" });
+    expect(screen.getByDisplayValue("Improve onboarding flow")).toBeTruthy();
   });
 });
 

@@ -26,6 +26,12 @@ import { ensurePtyPoll, stopPtyPoll } from "./running";
 // don't need to change.
 export { ensurePtyPoll as ensureServerPoll, stopPtyPoll as stopPoll };
 
+/** Short repo label for a notification chip — the repo folder name, not its full
+ *  path (which would overflow the compact chip). Empty when no repo. */
+export function repoLabel(repoId: string | null): string {
+  return repoId?.split("/").filter(Boolean).pop() ?? "";
+}
+
 /**
  * Pure selector: true when the workspace's dedicated server tab exists AND at least
  * one of its panes is live according to the serverStatus map (D3 revised).
@@ -112,9 +118,9 @@ export async function runServers(wsId: string): Promise<void> {
     useStore.getState().notify({
       color: "var(--err)",
       icon: "⚡",
-      headline: `${extra} server${extra > 1 ? "s" : ""} not started`,
-      sub: `Aurora caps server panes at 4 — starting the first 4.`,
-      repo: ws.repoId,
+      headline: `${extra} server${extra > 1 ? "s" : ""} not started in ${ws.title}`,
+      sub: `Aurora caps server panes at 4 — started the first 4, skipped ${extra}.`,
+      repo: repoLabel(ws.repoId),
     });
   }
 

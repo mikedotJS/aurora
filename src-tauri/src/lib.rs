@@ -10,6 +10,12 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Dev-only: pull `ANTHROPIC_API_KEY` from a gitignored `.env` so `tauri dev`
+    // reads the key from there instead of the OS keychain (avoids the repeated
+    // keychain-access prompt caused by the ad-hoc-signed debug binary).
+    #[cfg(debug_assertions)]
+    claude::load_dotenv();
+
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -68,6 +74,7 @@ pub fn run() {
             glab::glab_mr_list,
             glab::glab_current_user,
             glab::glab_mr_create,
+            glab::glab_mr_note_author,
             jira::jira_set_token,
             jira::jira_token_present,
             jira::jira_clear_token,

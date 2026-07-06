@@ -15,6 +15,11 @@ dist-ssr
 # Test coverage output (bun --coverage / test/cov.ts)
 coverage
 
+# Local env (dev secrets — e.g. ANTHROPIC_API_KEY for `tauri dev`). Never commit.
+.env
+.env.*
+!.env.example
+
 # Claude Code local (machine-specific) settings
 .claude/settings.local.json
 

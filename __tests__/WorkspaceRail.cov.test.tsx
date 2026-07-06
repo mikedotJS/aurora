@@ -57,6 +57,7 @@ mock.module("../src/lib/servers", () => ({
     serversCalls.push({ fn: "stop", wsId: id });
     return stopServersImpl(id);
   },
+  repoLabel: (repoId: string | null) => repoId?.split("/").filter(Boolean).pop() ?? "",
 }));
 
 const { useStore } = await import("../src/state/store");
@@ -686,9 +687,9 @@ describe("WorkspaceCard — handleDelete", () => {
     fireEvent.click(container.querySelector(".aurora-ws-trash")!);
     await flush();
     const notif = useStore.getState().notifLog[0];
-    expect(notif.headline).toBe("Delete failed");
+    expect(notif.headline).toBe("Couldn't delete Doomed");
     expect(notif.sub).toBe("worktree removal failed: boom");
-    expect(notif.repo).toBe("/repo");
+    expect(notif.repo).toBe("repo");
   });
 
   it("also shows no 'ahead' line when ahead is zero", async () => {
@@ -909,9 +910,9 @@ describe("WorkspaceContextBar", () => {
     fireEvent.click(container.querySelector(".aurora-ws-runtoggle")!);
     await flush();
     const notif = useStore.getState().notifLog[0];
-    expect(notif.headline).toBe("Run servers failed");
+    expect(notif.headline).toBe("Couldn't start servers — Workspace");
     expect(notif.sub).toBe("spawn failed");
-    expect(notif.repo).toBe("/repo");
+    expect(notif.repo).toBe("repo");
   });
 
   it("notifies 'Stop servers failed' stringifying a non-Error rejection", async () => {
@@ -924,7 +925,7 @@ describe("WorkspaceContextBar", () => {
     fireEvent.click(container.querySelector(".aurora-ws-runtoggle")!);
     await flush();
     const notif = useStore.getState().notifLog[0];
-    expect(notif.headline).toBe("Stop servers failed");
+    expect(notif.headline).toBe("Couldn't stop servers — Workspace");
     expect(notif.sub).toBe("kill -9 refused");
   });
 

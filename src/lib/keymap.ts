@@ -2,7 +2,7 @@
 // command runner. In normal mode Aurora owns the prompt; xterm's textarea (raw
 // mode) and form fields keep their own keystrokes.
 
-import { useStore, activePane, activeGroup, activeWorkspace, findPane, type PaneState } from "../state/store";
+import { useStore, activePane, activeGroup, activeWorkspace, findPane, workspaceOfPane, type PaneState } from "../state/store";
 import { pty, SIGINT } from "../term/pty";
 import { claudeSuggest, NoKeyError } from "../ai/suggest";
 import { typoFix, isInteractive, splitPathToken, folderCandidates, commonPrefix, type PathToken } from "./commands";
@@ -11,7 +11,43 @@ import { resolveCd, listDir } from "./sys";
 import { gatherProjectContext, formatProjectContext } from "./projectContext";
 import { runScript } from "./scripts";
 import { ensurePtyPoll, paneRunning } from "./running";
+import { loadDirFrecency, topDirs } from "./dirFrecency";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+
+/** Entries offered per `cd `-prefix popover; also caps the ⌥1..9 direct-accept range. */
+const CD_SUGGEST_LIMIT = 9;
+
+/**
+ * Re-derive the `cd ` frecency popover from a pane's *current* input (read fresh
+ * from the store — call this right after a `setInput`). Home terminal only
+ * (decision: v1 scope). Opens/updates when the input matches `/^cd\s/` with at
+ * least one candidate, closes otherwise (empty candidates, or the `cd ` prefix
+ * was edited away, e.g. Backspace past it).
+ */
+function updateCdSuggest(paneId: number) {
+  const s = useStore.getState();
+  const pane = findPane(s, paneId);
+  if (!pane) return;
+  const ws = workspaceOfPane(s, paneId);
+  if (ws?.kind !== "home") {
+    if (pane.cdSuggest) s.closeCdSuggest(paneId);
+    return;
+  }
+  // `cd ` + an optional single-token prefix, nothing more (a second space/arg —
+  // e.g. `cd foo bar` — means the user has moved past the path token; bail).
+  const m = /^cd\s+(\S*)$/.exec(pane.input);
+  if (!m) {
+    if (pane.cdSuggest) s.closeCdSuggest(paneId);
+    return;
+  }
+  const prefix = m[1];
+  const items = topDirs(loadDirFrecency(), prefix, pane.cwd, CD_SUGGEST_LIMIT);
+  if (items.length === 0) {
+    if (pane.cdSuggest) s.closeCdSuggest(paneId);
+    return;
+  }
+  s.openCdSuggest(paneId, items);
+}
 
 function focusRoot() {
   document.getElementById("aurora-root")?.focus();
@@ -34,6 +70,7 @@ async function pasteClipboard() {
     s.setInput(pane.id, pane.input + text.replace(/\s+/g, ""));
   } else {
     s.setInput(pane.id, pane.input + text);
+    updateCdSuggest(pane.id);
   }
 }
 
@@ -492,6 +529,27 @@ export function handleKeyDown(e: KeyboardEvent) {
     }
   }
 
+  // `cd ` frecency popover takes priority over folder-completion (decision C —
+  // the two never show at once; cdSuggest is only ever open in the home
+  // terminal, where Tab here accepts the selection instead of triggering
+  // triggerFolderCompletion). Checked first so it wins if both were ever open.
+  if (pane.cdSuggest) {
+    if (k === "ArrowDown") return void (e.preventDefault(), s.moveCdSuggest(pane.id, 1));
+    if (k === "ArrowUp") return void (e.preventDefault(), s.moveCdSuggest(pane.id, -1));
+    if (k === "Tab" || k === "Enter") return void (e.preventDefault(), s.acceptCdSuggest(pane.id));
+    if (k === "Escape") return void (e.preventDefault(), s.closeCdSuggest(pane.id));
+    // ⌥1..9 — direct-accept by row, bound to the physical digit key (e.code)
+    // rather than e.key so AZERTY (unshifted top row = à/é/"/…) still works,
+    // matching the ⌘0/Digit0 pattern above. Swallow the key even out of range
+    // (⌥N with no Nth row) so no stray character/dead-key leaks into the input.
+    if (e.altKey && !e.metaKey && !e.ctrlKey && /^Digit[1-9]$/.test(e.code)) {
+      e.preventDefault();
+      const i = parseInt(e.code.slice(5), 10) - 1;
+      if (i < pane.cdSuggest.items.length) s.acceptCdSuggest(pane.id, i);
+      return;
+    }
+  }
+
   // Folder-completion list is open: it owns navigation/accept/dismiss. Any other
   // key (typing, Backspace) falls through; setInput then clears the list.
   if (pane.completion) {
@@ -544,7 +602,17 @@ export function handleKeyDown(e: KeyboardEvent) {
   }
   if (k === "ArrowUp") return void (e.preventDefault(), s.histNav(pane.id, -1));
   if (k === "ArrowDown") return void (e.preventDefault(), s.histNav(pane.id, 1));
-  if (k === "Backspace") return void (e.preventDefault(), s.setInput(pane.id, pane.input.slice(0, -1)));
+  if (k === "Backspace") {
+    e.preventDefault();
+    s.setInput(pane.id, pane.input.slice(0, -1));
+    updateCdSuggest(pane.id);
+    return;
+  }
   if (k === "Escape") return void (e.preventDefault(), s.setInput(pane.id, ""));
-  if (k.length === 1 && !e.altKey) return void (e.preventDefault(), s.setInput(pane.id, pane.input + k));
+  if (k.length === 1 && !e.altKey) {
+    e.preventDefault();
+    s.setInput(pane.id, pane.input + k);
+    updateCdSuggest(pane.id);
+    return;
+  }
 }
