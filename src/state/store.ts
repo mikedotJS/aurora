@@ -951,10 +951,14 @@ export const useStore = create<StoreState>((set, get) => ({
 
   newTab: () =>
     set((s) => ({
-      workspaces: patchActiveWs(s.workspaces, s.activeWs, (w) => ({
-        tabs: [...w.tabs, newGroup(w.dir, w.repoId)],
-        active: w.tabs.length,
-      })),
+      workspaces: patchActiveWs(s.workspaces, s.activeWs, (w) => {
+        const g = w.tabs[w.active];
+        const startCwd = g?.panes[g.active]?.cwd ?? w.dir;
+        return {
+          tabs: [...w.tabs, newGroup(startCwd, w.repoId)],
+          active: w.tabs.length,
+        };
+      }),
     })),
 
   closeTab: (i) =>
