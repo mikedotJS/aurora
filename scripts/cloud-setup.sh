@@ -32,8 +32,16 @@ bun upgrade || true   # guarantee >= 1.3.x even if the base image ships an old B
 # Persist PATH for Claude's shell sessions
 echo 'export PATH="$HOME/.bun/bin:$PATH"' >> "$HOME/.bashrc"
 
-# --- JS/TS dependencies ---
-bun install
+# --- JS/TS dependencies (only when the repo is already checked out here) ---
+# The setup script can run BEFORE/independent of the repo clone (the env is
+# account-level), so a bare `bun install` fails with "could not find a
+# package.json". Install only when one is present; otherwise the session's first
+# step installs deps.
+if [ -f package.json ]; then
+  bun install
+else
+  echo "no package.json in $(pwd) — repo not checked out at setup time; skipping bun install"
+fi
 
 # --- OPTIONAL: Rust + Tauri Linux deps (uncomment only to work on src-tauri/) ---
 # Heavy: adds the Rust toolchain + Tauri's Linux system libs to every cold start.
