@@ -49,8 +49,18 @@ function parseLcov(txt: string) {
   }
 }
 
+// Per-test timeout for the isolated runs. bun defaults to 5s, which is fine on a
+// fast dev box but produces false reds for the async-heavy component suites
+// (multiple `waitFor` polls over a happy-dom tree, under coverage instrumentation)
+// on slower/shared hosts — cloud VMs, loaded CI. The suites themselves are sound
+// (e.g. the AI create shortcut issues exactly 2 backend calls, no retry storm);
+// they're just slow to settle there. A generous ceiling makes `bun run test`
+// deterministic across host speeds without weakening any assertion — it only
+// extends patience for a genuinely hung test, of which there are none.
+const TEST_TIMEOUT_MS = 20000;
+
 function runOnce(file: string) {
-  const proc = Bun.spawnSync(["bun", "test", file, "--coverage"], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync(["bun", "test", file, "--coverage", "--timeout", String(TEST_TIMEOUT_MS)], { stdout: "pipe", stderr: "pipe" });
   const clean = (proc.stdout.toString() + proc.stderr.toString()).replace(/\x1b\[[0-9;]*m/g, "");
   return {
     exit: proc.exitCode,
