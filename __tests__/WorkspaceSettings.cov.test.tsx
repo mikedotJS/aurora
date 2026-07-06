@@ -181,23 +181,6 @@ describe("two-way sync default toggle", () => {
   });
 });
 
-describe("default AI account", () => {
-  it("defaults to the terminal key and binds a pooled AI account on change", () => {
-    saveRepoConfig(defaultRepoConfig(ROOT));
-    useStore.setState({
-      workspaceSettingsRepo: ROOT,
-      connections: { jira: [], ai: [{ id: "ai1", provider: "claude", label: "Work Claude" }] },
-    });
-    render(<WorkspaceSettings />);
-    const select = screen.getByText("Work Claude").closest("select") as HTMLSelectElement;
-    expect(select.value).toBe("");
-    fireEvent.change(select, { target: { value: "ai1" } });
-    expect(getRepoConfig(ROOT).defaults.aiDefaultId).toBe("ai1");
-    fireEvent.change(select, { target: { value: "" } });
-    expect(getRepoConfig(ROOT).defaults.aiDefaultId).toBeNull();
-  });
-});
-
 describe("presets", () => {
   it("renders each preset's layout + issue types (or 'no auto-types'), opens the editor, and returns via 'all settings'", () => {
     const cfg = defaultRepoConfig(ROOT);

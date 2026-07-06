@@ -224,18 +224,11 @@ export function WorkspaceSettings() {
               <Toggle on={cfg.defaults.jiraSyncDefault} onToggle={() => setDefaults({ jiraSyncDefault: !cfg.defaults.jiraSyncDefault })} />
             </Row>
 
-            {/* AI */}
-            <Section title="AI" />
-            <Row label="Default AI account" desc="Used for this repo's workspaces · manage accounts in Settings → Connections.">
-              <select value={cfg.defaults.aiDefaultId ?? ""} onChange={(e) => setDefaults({ aiDefaultId: e.target.value || null })} style={selectStyle}>
-                <option value="">Claude · terminal key</option>
-                {connections.ai.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-            </Row>
+            {/* AI account picker intentionally omitted: multi-account AI is
+                DEFERred (see docs/workspaces-reprise-roadmap.md). `aiDefaultId`
+                is persisted for forward-compat but read by no AI call, so
+                surfacing a picker here would be a dead knob — the flow keeps the
+                single terminal key until the account-pool wiring lands. */}
 
             {/* Presets */}
             <Section title="Presets" />
