@@ -1,50 +1,51 @@
 flowchart TD
-  start(["User dans Aurora"]) --> palette["⌘K — Command palette<br/>WorkspaceCommand"]
+  start(["User dans Aurora"]) --> palette["⌘K — Command palette<br/>WorkspaceCommand<br/>(chip repo-cible persistant · survit à la frappe)"]
   palette -->|workspace existant| switchExisting["Switch to workspace"]
   palette -->|issue Jira live| jiraIssue["Ouvre l'issue → form"]
+  palette -->|"⌘↵ — décris/nomme"| describe["✦ describe (IA)<br/>titre + branche via Claude → form pré-rempli"]
   palette -->|choisir une source| sources
 
   subgraph sources["Sources de création"]
     direction LR
     branch["⎇ branch"]
-    describe["✦ describe"]
     clone["⧉ clone (copie ws active)"]
-    gitlab["⇋ gitlab (label seul)"]
     jira["▦ jira"]
   end
 
-  branch -->|↵ + query| quick["Quick-create<br/>quickCreate"]
+  branch -->|↵ + query| quick["Quick-create<br/>quickCreate → buildCreateSpec"]
   clone -->|↵| quick
   sources -->|⇥ éditer le scope| form
   jiraIssue --> form
+  describe --> form
 
-  form["Scope form — WorkspaceScopeForm<br/>branch · base · preset · AI · on-open script · jira sync"]
+  form["Scope form — WorkspaceScopeForm<br/>branch · base · preset · on-open script · jira sync"]
   quick --> runCreate{{"runCreate"}}
   form -->|Create| runCreate
 
   subgraph create["Pipeline de création — lib/create.ts"]
     direction TB
     v1["valide la branche (local + backend)"] --> wt["git worktree add<br/>.aurora-worktrees/{repo}/{slug}"]
-    wt --> port["allocOffset → AURORA_PORT_OFFSET<br/>(PORT seulement si basePort réglé)"]
-    port --> cw["store.createWorkspace → crée les panes"]
+    wt --> port["allocOffset → AURORA_PORT_OFFSET<br/>(seule primitive port · pas d'injection PORT auto)<br/>+ AURORA_WORKSPACE_NAME"]
+    port --> envf["materialize env files (offset appliqué)"]
+    envf --> cw["store.createWorkspace → crée les panes"]
     cw --> install["install deps (déduit du lockfile)"]
-    install --> hasScript{"scriptName défini ?"}
-    hasScript -->|"oui — chemin form"| runscript["on-open script lancé"]
-    hasScript -->|"non — quick-create"| skip["script sauté<br/>(kickoff éventuel tapé, non exécuté)"]
+    install --> hasScript{"scriptName / preset.runOnOpen ?"}
+    hasScript -->|oui| runscript["on-open script lancé<br/>(quick ET form — un seul chemin)"]
+    hasScript -->|aucun| justInstall["install seul"]
   end
   runCreate --> create
   runscript --> active(["Workspace actif"])
-  skip --> active
+  justInstall --> active
 
   active --> ws
   subgraph ws["Dans un workspace"]
     direction TB
     tabs["Tabs (Groups) — new / cycle / merge<br/>auto-rename via Haiku"]
     panes["Panes — chacun a son PTY<br/>split 1–4 · respawn self-heal"]
-    scriptsR["Run scripts / commandes"]
+    scriptsR["Run / Stop scripts · liveness poll"]
     diff["Vue pane ⇄ Changes (diff)"]
-    isolation["Isolation port : $AURORA_PORT_OFFSET dans l'env du pane<br/>seulement si le script le lit"]
-    tabs --- panes --- scriptsR --- diff --- isolation
+    portView["Port/offset affichés — chip carte + barre de contexte"]
+    tabs --- panes --- scriptsR --- diff --- portView
   end
 
   active --> life
@@ -52,20 +53,17 @@ flowchart TD
     direction TB
     switchW["switchWorkspace — les autres continuent de tourner"]
     rehydrate["Restart → rehydrate (métadonnées seules, mount lazy)"]
-    archive["archiveWorkspace — retire de la liste<br/>worktree NON nettoyé · aucun appelant UI"]
+    teardown["deleteWorkspace (1re classe) — bouton trash<br/>kill du groupe de process (SIGHUP→SIGKILL)<br/>+ git worktree remove + retrait du store<br/>confirm si dirty/unpushed"]
   end
 
-  subgraph gaps["Inerte / cassé aujourd'hui"]
+  subgraph limits["Limitations connues — par design / deferred"]
     direction TB
-    g1["Pas de teardown UI — impossible de supprimer un ws dans l'app"]
-    g2["Worktrees jamais nettoyés → .aurora-worktrees s'accumule"]
-    g3["Toggles morts : autoPortOffset · isolation mode · lifecycle.closeAction"]
-    g4["Process-group pas tué à la fermeture → dev servers orphelins (chauffe)"]
-    g5["Cible repoId de la palette perdue dès la 1re frappe"]
+    l1["Isolation port conditionnelle : un script qui ne lit pas<br/>$AURORA_PORT_OFFSET peut recollisionner (pas de PORT auto — choix assumé)"]
+    l2["Lanes manuelles (repoId null) : pas de teardown in-app (trash sur cartes worktree only)"]
+    l3["ws.branch se périme après un switch de branche in-worktree"]
+    l4["⌘W sur le dernier onglet = no-op silencieux"]
   end
 
-  classDef warn fill:#3a1f24,stroke:#ff7b72,color:#ffd7d3;
-  classDef gap fill:#241c10,stroke:#e3b341,color:#ffe9b0;
-  class gitlab,isolation,archive warn;
-  class g1,g2,g3,g4,g5 gap;
-  style gaps fill:#1a1407,stroke:#e3b341,color:#ffe9b0;
+  classDef defer fill:#241c10,stroke:#e3b341,color:#ffe9b0;
+  class l1,l2,l3,l4 defer;
+  style limits fill:#1a1407,stroke:#e3b341,color:#ffe9b0;
