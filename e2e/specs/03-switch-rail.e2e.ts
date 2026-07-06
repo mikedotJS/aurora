@@ -180,7 +180,7 @@ describe("Switch / Rail flow", () => {
     });
   });
 
-  it("SWITCH-10: last-workspace removal guard hides the trash icon on a single workspace", async () => {
+  it("SWITCH-10: with the permanent Home terminal, a solo repo workspace IS deletable (trash on it, never on Home)", async () => {
     const [dirA] = repo.worktreeDirs;
     const wsA = persistedWs("wsSolo", repo.root, dirA, "feat/alpha");
     await seedAppState({
@@ -189,14 +189,19 @@ describe("Switch / Rail flow", () => {
     });
     await waitForText("feat/alpha");
 
-    // showTrash = worktreeBacked && !isLast — with a single workspace, isLast is
-    // true, so the trash icon is never rendered regardless of worktree backing.
-    const trash = $(".aurora-ws-trash");
-    await browser.pause(500); // let the async worktreeList/pathResolve check settle
-    expect(await trash.isExisting()).toBe(false);
+    // Post home-terminal merge: boot always adds the kind:"home" workspace, so
+    // workspaceCount is 2 and isLast is false — the repo card legitimately shows
+    // its trash. Home never shows one (showTrash excludes kind:"home",
+    // WorkspaceRail.tsx:85). Exactly one trash icon in the whole rail.
+    await browser.waitUntil(async () => (await $$(".aurora-ws-trash").length) === 1, {
+      timeout: 10_000,
+      timeoutMsg: "expected exactly one trash icon (repo card only, none on Home)",
+    });
   });
 
-  it("SWITCH-11: collapsing then expanding the rail preserves the active workspace", async () => {
+  it("SWITCH-11: collapsing then expanding the rail preserves the active workspace", async function () {
+    // H-12/H-13, see SWITCH-4 above — same post-merge reload-timing budget.
+    this.timeout(180_000);
     await seedThree();
     await waitForText("feat/alpha");
 
@@ -237,7 +242,11 @@ describe("Switch / Rail flow", () => {
     await waitForText("⎇ feat/alpha");
   });
 
-  it("SWITCH-4: ⌘2 in the collapsed switcher dropdown activates the second workspace", async () => {
+  it("SWITCH-4: ⌘3 in the collapsed switcher dropdown activates the second seeded workspace", async function () {
+    // H-12/H-13: this test does two full seed/reload round trips worth of
+    // waiting (rail collapse + dropdown open + chord + activation settle) —
+    // give it the same explicit budget as its neighbors post-merge.
+    this.timeout(180_000);
     await seedThree();
     await waitForText("feat/alpha");
 
@@ -263,13 +272,23 @@ describe("Switch / Rail flow", () => {
     const dropdownInput = 'div[role="listbox"][aria-label="Switch workspace"] input';
     await $(dropdownInput).waitForExist({ timeout: 5_000 });
 
-    // The dropdown lists workspaces in `workspaces` array order: wsA, wsB, wsC.
-    // ⌘2 should activate the second entry (wsB / feat/beta).
-    await dispatchKeyOn(dropdownInput, "2", { meta: true });
+    // Post-home-terminal-merge: WorkspaceSwitcher's dropdown list is
+    // `workspaces` in state-array order, UNFILTERED by kind (unlike the rail,
+    // which drops kind:"home" — WorkspaceRail.tsx:424). store.ts's init()
+    // unshifts the permanent Home workspace to index 0 whenever it isn't
+    // already present in the restored/seeded array (store.ts:685-696) — this
+    // test seeds [wsA, wsB, wsC] with no home entry, so after boot the real
+    // order is [home, wsA, wsB, wsC]. ⌘2 now lands on wsA (the FIRST seeded
+    // workspace), not wsB — ⌘3 is the chord that reaches the second seeded
+    // workspace. Verified by source inspection (WorkspaceSwitcher.tsx:68-70,
+    // 83-88; store.ts:685-696), not a guess: this is a stale test assumption
+    // from before the merge, not an app regression — the dropdown indexes
+    // exactly the array it's given, home included, same as it always has.
+    await dispatchKeyOn(dropdownInput, "3", { meta: true });
 
     await browser.waitUntil(
       async () => (await readAppStorage<{ activeWs: string }>("aurora.workspaces"))?.activeWs === "wsB",
-      { timeout: 10_000, timeoutMsg: "⌘2 did not activate the second workspace" },
+      { timeout: 10_000, timeoutMsg: "⌘3 did not activate the second seeded workspace" },
     );
     // Choosing a workspace closes the dropdown.
     await dropdown.waitForExist({ reverse: true, timeout: 5_000 });

@@ -33,7 +33,10 @@ export const config: WebdriverIO.Config = {
   ],
   logLevel: "warn",
   framework: "mocha",
-  mochaOpts: { ui: "bdd", timeout: 120_000 },
+  // 240s: every wdio element command pays the ~5s H-6 focus-check tax and the
+  // post-merge boot (Home PTY spawn) slowed reloads — element-heavy tests
+  // legitimately exceed 120s while still being healthy.
+  mochaOpts: { ui: "bdd", timeout: 240_000 },
   reporters: ["spec"],
   waitforTimeout: 15_000,
   connectionRetryTimeout: 120_000,

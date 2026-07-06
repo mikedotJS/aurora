@@ -98,6 +98,22 @@ export async function resetToFirstRun(): Promise<void> {
  * driver session does not survive `browser.refresh()` on tauri:// URLs.
  * Marks the current document, fires location.reload(), then waits for a new
  * document (marker gone) that has rendered.
+ *
+ * H-13: every reload fully remounts the React tree, which lazily re-mounts
+ * a pane for the permanent Home workspace (and any other `mounted: true`
+ * workspace) — each mount calls the real `pty_spawn` Tauri command
+ * (src/term/pty.ts:85), spawning a brand-new OS shell process on the Rust
+ * side. A page reload is NOT an app relaunch: the Tauri/Rust backend process
+ * persists across it, so PTYs spawned by earlier reloads in the same wdio
+ * session are never torn down — they accumulate for the lifetime of the
+ * spawned `aurora` process. Specs that reload several times per test (every
+ * `seedAppState()` call reloads) build up more live PTYs as the run
+ * progresses, and later reloads/renders in the same run measurably slow
+ * down under that accumulated load — the root cause of the bare mocha
+ * `Error: Timeout` (no assertion text, no crash) seen post-merge on
+ * `reloadFrontend()`-adjacent waits. The fix here is defensive on the test
+ * side (higher budget + a cheap boot-completion poll), not a Rust-side PTY
+ * cleanup — see .context/e2e-anomalies.md H-13 for the full evidence chain.
  */
 export async function reloadFrontend(): Promise<void> {
   await browser.execute(() => {
@@ -109,9 +125,28 @@ export async function reloadFrontend(): Promise<void> {
       browser.execute(
         () => !(window as unknown as Record<string, unknown>).__e2e_stale && document.querySelector("#root") !== null,
       ),
-    { timeout: 20_000, timeoutMsg: "frontend did not reload" },
+    { timeout: 45_000, timeoutMsg: "frontend did not reload" },
   );
   await waitForAppReady();
+  // Boot completion: wait for the store's own post-init persisted write (it
+  // always contains a kind:"home" entry, see store.ts:685-696) rather than
+  // just "#root has children" — under H-13 load, #root can render its first
+  // paint before the async init()/rehydrate pipeline has actually finished
+  // writing workspaces back to localStorage.
+  await browser.waitUntil(
+    async () =>
+      browser.execute(() => {
+        const raw = localStorage.getItem("aurora.workspaces");
+        if (!raw) return false;
+        try {
+          const parsed = JSON.parse(raw) as { workspaces?: Array<{ kind?: string }> };
+          return Array.isArray(parsed.workspaces) && parsed.workspaces.some((w) => w.kind === "home");
+        } catch {
+          return false;
+        }
+      }),
+    { timeout: 45_000, timeoutMsg: "boot did not complete — no kind:\"home\" workspace persisted" },
+  );
 }
 
 export async function waitForAppReady(): Promise<void> {

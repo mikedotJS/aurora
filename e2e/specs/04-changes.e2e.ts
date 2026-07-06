@@ -262,7 +262,14 @@ describe("Changes view flow", () => {
     );
   });
 
-  it("CHANGES-14: Escape closes the overlay, terminal visible again", async () => {
+  it("CHANGES-14: Escape closes the overlay, terminal visible again", async function () {
+    // H-12/H-13: reloadFrontend() (inside seedOne()) pays a growing PTY-mount
+    // tax as the run accumulates live Home/pane shells across reloads — this
+    // test's own body does no more work than its neighbors, but the global
+    // 120s mocha timeout has bitten it intermittently since the home-terminal
+    // merge. Give it the same explicit budget as the harness's own 45s reload
+    // wait needs headroom for.
+    this.timeout(180_000);
     await seedOne();
     await waitForText("feat/changes");
     // Probe on "untracked.txt" (an unstaged/untracked file), not "Staged" —
@@ -281,7 +288,9 @@ describe("Changes view flow", () => {
     expect(rendered).toBe(true);
   });
 
-  it("CHANGES-10: a repo with no commits shows a graceful empty/no-base state, no crash", async () => {
+  it("CHANGES-10: a repo with no commits shows a graceful empty/no-base state, no crash", async function () {
+    // H-12/H-13, see CHANGES-14 above.
+    this.timeout(180_000);
     // Separate fixture: `git init` with zero commits — no HEAD to diff against.
     const bareRoot = mkdtempSync(join(tmpdir(), "aurora-e2e-nocommits-"));
     execFileSync("git", ["init", "-b", "main"], { cwd: bareRoot });

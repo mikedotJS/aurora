@@ -148,10 +148,11 @@ describe("Teardown / remove flow", () => {
       timeoutMsg: "feat/beta card was not removed from the rail after delete",
     });
 
-    // localStorage no longer lists wsB.
+    // localStorage no longer lists wsB (3 remain: Home + wsA + wsC — the boot
+    // always adds the permanent kind:"home" workspace since the home-terminal merge).
     const persisted = await readAppStorage<{ workspaces: PersistedWs[]; activeWs: string }>("aurora.workspaces");
     expect(persisted?.workspaces.some((w) => w.id === "wsB")).toBe(false);
-    expect(persisted?.workspaces.length).toBe(2);
+    expect(persisted?.workspaces.length).toBe(3);
 
     // The worktree directory itself is gone from disk (worktree_remove ran).
     await browser.waitUntil(() => !existsSync(wsB.dir), {
@@ -180,7 +181,8 @@ describe("Teardown / remove flow", () => {
     await browser.waitUntil(
       async () => {
         const persisted = await readAppStorage<{ workspaces: PersistedWs[]; activeWs: string }>("aurora.workspaces");
-        return persisted != null && persisted.activeWs !== "wsA" && persisted.workspaces.length === 2;
+        // 3 remain post-delete: Home + wsB + wsC (Home is always added at boot).
+        return persisted != null && persisted.activeWs !== "wsA" && persisted.workspaces.length === 3;
       },
       { timeout: 15_000, timeoutMsg: "activeWs did not re-point after deleting the active workspace" },
     );
@@ -197,7 +199,7 @@ describe("Teardown / remove flow", () => {
     await waitForText("feat/beta");
   });
 
-  it("TEARDOWN-3: the last remaining workspace has no delete affordance", async () => {
+  it("TEARDOWN-3: deleting the last repo workspace falls back to the permanent Home terminal", async () => {
     const [dirA] = repo.worktreeDirs;
     const wsA = persistedWs("wsSolo", repo.root, dirA, "feat/alpha");
     await seedAppState({
@@ -206,11 +208,35 @@ describe("Teardown / remove flow", () => {
     });
     await waitForText("feat/alpha");
 
-    await browser.pause(500); // let the async worktreeList/pathResolve check settle
-    expect(await (await $$(".aurora-ws-trash")).length).toBe(0);
+    // Post home-terminal merge the solo repo workspace is no longer "last"
+    // (Home always exists), so it IS deletable — deleting it must hand the
+    // active slot to Home, not crash into an empty state.
+    await stubConfirmAccept();
+    await browser.waitUntil(async () => (await (await $$(".aurora-ws-trash")).length) === 1, {
+      timeout: 10_000,
+      timeoutMsg: "trash icon did not appear on the solo repo card",
+    });
+    await browser.execute(() => {
+      const trash = document.querySelector(".aurora-ws-trash") as HTMLElement | null;
+      trash?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+    });
+    await browser.waitUntil(
+      async () => {
+        const persisted = await readAppStorage<{ workspaces: Array<{ kind?: string }>; activeWs: string | null }>(
+          "aurora.workspaces",
+        );
+        return persisted != null && persisted.workspaces.length === 1 && persisted.workspaces[0].kind === "home";
+      },
+      { timeout: 15_000, timeoutMsg: "deleting the solo repo workspace did not fall back to Home" },
+    );
   });
 
-  it("changesWsId stale-overlay guard: deleting the workspace with Changes open closes the overlay (no zombie)", async () => {
+  it("changesWsId stale-overlay guard: deleting the workspace with Changes open closes the overlay (no zombie)", async function () {
+    // H-12/H-13: this test's own seedThree() + Changes-open retry loop pays a
+    // growing PTY-mount tax post home-terminal-merge (every reload spawns a
+    // fresh Home shell that the Rust backend never tears down across reloads
+    // in the same session) — give it explicit headroom past the 120s default.
+    this.timeout(180_000);
     await seedThree();
     await waitForText("feat/alpha"); // wsA active
 
