@@ -202,8 +202,8 @@ describe("presets", () => {
   it("renders each preset's layout + issue types (or 'no auto-types'), opens the editor, and returns via 'all settings'", () => {
     const cfg = defaultRepoConfig(ROOT);
     cfg.presets = [
-      { id: "p1", name: "feature-work", issueTypes: ["Bug", "Story"], paneLayout: "2-split", runOnOpen: null, env: {}, baseOverride: null, portOffset: "auto", jiraSync: false },
-      { id: "p2", name: "bare", issueTypes: [], paneLayout: "1", runOnOpen: null, env: {}, baseOverride: null, portOffset: "auto", jiraSync: false },
+      { id: "p1", name: "feature-work", issueTypes: ["Bug", "Story"], paneLayout: "2-split", runOnOpen: null, env: {}, envFiles: [], baseOverride: null, portOffset: "auto", jiraSync: false },
+      { id: "p2", name: "bare", issueTypes: [], paneLayout: "1", runOnOpen: null, env: {}, envFiles: [], baseOverride: null, portOffset: "auto", jiraSync: false },
     ];
     saveRepoConfig(cfg);
     useStore.setState({ workspaceSettingsRepo: ROOT });

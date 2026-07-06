@@ -8,7 +8,7 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
 // assert what would be written without a backend.
 const writes: Array<{ path: string; content: string }> = [];
 mock.module("../src/lib/sys", () => ({
-  writeTextFile: (path: string, content: string) => {
+  writeTextFile: (_root: string, path: string, content: string) => {
     if (path.includes("BOOM")) return Promise.reject(new Error("nope"));
     writes.push({ path, content });
     return Promise.resolve();
