@@ -465,7 +465,7 @@ export function handleKeyDown(e: KeyboardEvent) {
   // let Esc close it and swallow every other key so neither the prompt nor a
   // full-screen program (rawMode) painted behind the overlay is touched. Checked
   // before the ⌃ block so control keys can't leak to the program behind it.
-  if (s.changesWsId) {
+  if (s.changesWsId && s.changesWsId === s.activeWs) {
     if (k === "Escape") return void (e.preventDefault(), s.closeChanges());
     return;
   }

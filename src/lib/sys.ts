@@ -21,12 +21,13 @@ export function readTextFile(path: string, maxBytes = 8192): Promise<string | nu
 }
 
 /**
- * Write `content` to `path`, creating parent dirs. Rejects (does not swallow) on
- * failure so callers can surface the error. Used to materialize per-workspace
- * env files on worktree create (see lib/envFiles.ts).
+ * Write `content` to `path` (which must resolve inside `root`), creating parent
+ * dirs. Rejects (does not swallow) on failure — including when `path` escapes
+ * `root` — so callers can surface the error. Used to materialize per-workspace
+ * env files on worktree create (see lib/envFiles.ts); `root` is the workspace dir.
  */
-export function writeTextFile(path: string, content: string): Promise<void> {
-  return invoke<void>("write_text_file", { path, content });
+export function writeTextFile(root: string, path: string, content: string): Promise<void> {
+  return invoke<void>("write_text_file", { root, path, content });
 }
 
 export function gitBranch(cwd: string): Promise<string | null> {

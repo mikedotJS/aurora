@@ -2,7 +2,7 @@
 // issue types, pane layout, on-open script, env vars, base override, port offset,
 // two-way Jira sync — with delete / cancel / save.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { updatePreset, deletePreset } from "../lib/presets";
 import { type Preset, type PaneLayout } from "../lib/repoConfig";
 import { type EnvFileSpec } from "../lib/envFiles";
@@ -130,14 +130,24 @@ export function PresetEditor({ root, preset, onClose }: { root: string; preset: 
   const issueTypesText = draft.issueTypes.join(", ");
   const envRows = Object.entries(draft.env);
   const portAuto = draft.portOffset === "auto";
-  // Tolerate a preset built before the field existed (undefined) — migration
-  // fills it, but never let the editor crash on a stray fixture.
-  const envFiles = draft.envFiles ?? [];
+  const envFiles = draft.envFiles;
+
+  // Stable per-row identity for React keys, kept in parallel to draft.envFiles
+  // (EnvFileSpec has no id — it's not persisted). Without this, key={i} makes
+  // focus/scroll jump to the wrong row when a row in the middle is removed.
+  const nextEnvFileKey = useRef(0);
+  const [envFileKeys, setEnvFileKeys] = useState<number[]>(() => envFiles.map(() => nextEnvFileKey.current++));
 
   const updateEnvFile = (i: number, p: Partial<EnvFileSpec>) =>
     set("envFiles", envFiles.map((f, fi) => (fi === i ? { ...f, ...p } : f)));
-  const removeEnvFile = (i: number) => set("envFiles", envFiles.filter((_, fi) => fi !== i));
-  const addEnvFile = () => set("envFiles", [...envFiles, { path: "", content: "" }]);
+  const removeEnvFile = (i: number) => {
+    set("envFiles", envFiles.filter((_, fi) => fi !== i));
+    setEnvFileKeys((ks) => ks.filter((_, fi) => fi !== i));
+  };
+  const addEnvFile = () => {
+    set("envFiles", [...envFiles, { path: "", content: "" }]);
+    setEnvFileKeys((ks) => [...ks, nextEnvFileKey.current++]);
+  };
 
   const save = () => {
     updatePreset(root, draft.id, draft);
@@ -276,7 +286,7 @@ export function PresetEditor({ root, preset, onClose }: { root: string; preset: 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {envFiles.map((f, i) => (
               <div
-                key={i}
+                key={envFileKeys[i]}
                 style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--line)", borderRadius: 8, padding: 8 }}
               >
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>

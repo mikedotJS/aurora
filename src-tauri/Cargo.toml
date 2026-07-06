@@ -31,9 +31,18 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-dialog = "2.7.1"
-# Embedded WebDriver server for e2e (WebdriverIO); registration is debug-gated in lib.rs.
-tauri-plugin-wdio-webdriver = "1"
+# Embedded WebDriver server for e2e (WebdriverIO); optional so it never links into
+# a release binary. Enabled only by the `e2e` feature (see `[features]` below and
+# `lib.rs`'s `#[cfg(feature = "e2e")]` registration).
+tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 libc = "0.2"
+
+[features]
+default = []
+# Pulls in the embedded WebDriver server (axum + wdio glue) for WebdriverIO e2e
+# runs. Built via `bun run e2e:build` → `tauri build --debug --no-bundle --features e2e
+# --config src-tauri/tauri.e2e.conf.json`. Never enabled for a release build.
+e2e = ["dep:tauri-plugin-wdio-webdriver"]
 
 # Release profile: whole-program optimization for the shipped binary.
 # `lto` + `codegen-units = 1` let the optimizer inline across crate boundaries

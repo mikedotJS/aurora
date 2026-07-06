@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "e2e",
+  "description": "Embedded WebDriver server permission for WebdriverIO e2e runs only. Never included in a release build — see tauri.conf.json's app.security.capabilities vs. tauri.e2e.conf.json's.",
+  "windows": ["main"],
+  "permissions": ["wdio-webdriver:default"]
+}

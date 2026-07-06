@@ -23,8 +23,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
 
-    // Embedded WebDriver server for e2e (WebdriverIO @wdio/tauri-service) — debug builds only.
-    #[cfg(debug_assertions)]
+    // Embedded WebDriver server for e2e (WebdriverIO @wdio/tauri-service) — only
+    // compiled in when the `e2e` cargo feature is enabled (see Cargo.toml), so
+    // neither the axum/wdio code nor its capability ships in a release build.
+    #[cfg(feature = "e2e")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
 
     let app = builder

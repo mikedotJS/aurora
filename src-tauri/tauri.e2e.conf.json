@@ -1,3 +1,8 @@
 {
-  "identifier": "com.aurora.e2e"
+  "identifier": "com.aurora.e2e",
+  "app": {
+    "security": {
+      "capabilities": ["default", "e2e"]
+    }
+  }
 }

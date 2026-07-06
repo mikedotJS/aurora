@@ -136,18 +136,33 @@ pub fn read_text_file(path: String, max_bytes: Option<usize>) -> Result<String, 
     Ok(String::from_utf8_lossy(&bytes[..end]).to_string())
 }
 
-/// Write `content` to `path`, creating any missing parent directories.
+/// Write `content` to `path` (which must resolve inside `root`), creating any
+/// missing parent directories.
 ///
 /// Used by the workspace-create flow to materialize per-workspace env files
 /// (e.g. `apps/api/.env.local`) so services that read their port from a file —
 /// rather than a `$((BASE + AURORA_PORT_OFFSET))` shell expression — pick up the
 /// workspace's allocated port with no change to their start command. Overwrites
 /// an existing file (workspace dirs are freshly-created worktrees).
+///
+/// `root` is the workspace directory the write must stay within. Even though the
+/// frontend already blocks absolute/`..` paths (`resolveEnvPath`), this is a raw
+/// write primitive reachable from the webview, so the containment is re-checked
+/// server-side: the resolved parent must sit under the canonicalized `root`.
 #[tauri::command]
-pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+pub fn write_text_file(root: String, path: String, content: String) -> Result<(), String> {
+    let root_real =
+        std::fs::canonicalize(expand_tilde(&root)).map_err(|e| format!("workspace root unavailable: {e}"))?;
     let target = expand_tilde(&path);
-    if let Some(parent) = std::path::Path::new(&target).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let parent = std::path::Path::new(&target)
+        .parent()
+        .ok_or_else(|| "target has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    // Canonicalize the now-existing parent so symlinks and `..` are resolved
+    // before the containment check — don't trust the frontend guard alone.
+    let parent_real = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+    if !parent_real.starts_with(&root_real) {
+        return Err("refusing to write outside the workspace".to_string());
     }
     std::fs::write(&target, content).map_err(|e| e.to_string())
 }

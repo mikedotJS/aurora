@@ -73,7 +73,7 @@ impl PtyManager {
     /// sleep so ⌘Q stays fast. Collects shell_pgid + fg + server.found() per session.
     pub fn kill_all(&self) {
         let sessions: Vec<PtySession> = {
-            let mut map = self.sessions.lock().unwrap();
+            let mut map = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
             map.drain().map(|(_, s)| s).collect()
         };
 
@@ -232,7 +232,7 @@ pub fn pty_spawn(
 
     let is_zsh = shell_path.rsplit('/').next() == Some("zsh");
 
-    manager.sessions.lock().unwrap().insert(
+    manager.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
         id.clone(),
         PtySession {
             writer,
@@ -254,7 +254,7 @@ pub fn pty_spawn(
 /// Write keystrokes / a command line into a session.
 #[tauri::command]
 pub fn pty_write(manager: State<'_, PtyManager>, id: String, data: String) -> Result<(), String> {
-    let mut sessions = manager.sessions.lock().unwrap();
+    let mut sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let session = sessions.get_mut(&id).ok_or("no such pty session")?;
     session
         .writer
@@ -272,7 +272,7 @@ pub fn pty_resize(
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
-    let sessions = manager.sessions.lock().unwrap();
+    let sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let session = sessions.get(&id).ok_or("no such pty session")?;
     session
         .master
@@ -322,7 +322,7 @@ fn group_teardown(pgids: &[Option<i32>]) {
 /// Dropping `session` at the end closes the master side → kernel SIGHUP to fg group.
 #[tauri::command]
 pub fn pty_kill(manager: State<'_, PtyManager>, id: String) -> Result<(), String> {
-    if let Some(mut session) = manager.sessions.lock().unwrap().remove(&id) {
+    if let Some(mut session) = manager.sessions.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
         let fg = session.master.process_group_leader();
         if session.shell_pgid.is_some() {
             group_teardown(&[session.shell_pgid, fg, session.server.found()]);
@@ -404,6 +404,22 @@ fn should_rearm(current: &ServerCapture, found_and_alive: bool) -> bool {
     !(matches!(current, ServerCapture::Found(_)) && found_and_alive)
 }
 
+/// Liveness probe for a captured process group: `killpg(pgid, 0)` sends no signal,
+/// it only asks the kernel whether the group exists. `Ok(())` (0) means the group
+/// exists and we can signal it. `EPERM` also means the group exists — we merely
+/// lack permission to signal it (can legitimately happen for a re-parented/setuid
+/// descendant) — so it counts as alive too. Any other errno (chiefly `ESRCH`)
+/// means the group is gone.
+///
+/// Single source of truth for this decision so `should_rearm`'s caller and
+/// `pty_server_status` can never drift on what "alive" means for a captured pgid.
+fn pgid_alive(pgid: i32) -> bool {
+    if unsafe { libc::killpg(pgid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 /// Start a fire-and-forget sampler that captures the server's real process group.
 ///
 /// Marks the session `Pending` immediately and spawns a thread that samples the
@@ -435,13 +451,13 @@ pub fn pty_capture_server_pgid(
     // existing capture instead of resetting it and spawning a redundant
     // sampler thread.
     {
-        let mut sessions = manager.sessions.lock().unwrap();
+        let mut sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let session = match sessions.get_mut(&id) {
             Some(s) => s,
             None => return Ok(()), // session already gone — no-op
         };
         let found_and_alive = match session.server {
-            ServerCapture::Found(p) => (unsafe { libc::killpg(p, 0) }) == 0,
+            ServerCapture::Found(p) => pgid_alive(p),
             _ => false,
         };
         if !should_rearm(&session.server, found_and_alive) {
@@ -476,7 +492,7 @@ pub fn pty_capture_server_pgid(
                 // that stays in the foreground all the time, e.g. a streaming API).
                 // If no non-shell pgid was ever observed, mark Failed → block-flag fallback.
                 let mgr = app2.state::<PtyManager>();
-                let mut sessions = mgr.sessions.lock().unwrap();
+                let mut sessions = mgr.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(s) = sessions.get_mut(&id2) {
                     if matches!(s.server, ServerCapture::Pending) {
                         s.server = match last_non_shell {
@@ -491,7 +507,7 @@ pub fn pty_capture_server_pgid(
             // Brief lock: read fg and shell_pgid, then release before sleeping.
             let sample: Option<(Option<i32>, Option<i32>)> = {
                 let mgr = app2.state::<PtyManager>();
-                let sessions = mgr.sessions.lock().unwrap();
+                let sessions = mgr.sessions.lock().unwrap_or_else(|e| e.into_inner());
                 match sessions.get(&id2) {
                     None => None, // session removed (pane closed mid-capture)
                     Some(s) => {
@@ -514,7 +530,7 @@ pub fn pty_capture_server_pgid(
                     ) {
                         // Confirmed "returned to shell" — record the captured server pgid.
                         let mgr = app2.state::<PtyManager>();
-                        let mut sessions = mgr.sessions.lock().unwrap();
+                        let mut sessions = mgr.sessions.lock().unwrap_or_else(|e| e.into_inner());
                         if let Some(s) = sessions.get_mut(&id2) {
                             if matches!(s.server, ServerCapture::Pending) {
                                 s.server = ServerCapture::Found(freeze_pgid);
@@ -641,9 +657,14 @@ fn foreign_tty_pgids(tty_dev: u32, shell_pid: Option<i32>) -> Vec<i32> {
                 continue;
             }
             // Never signal the shell's own group, even if the shell shares the
-            // tty (it always does). Use the process's real pgid (`pbi_pgid`).
+            // tty (it always does), nor Aurora's own process group — mirrors the
+            // guard `group_teardown`/`kill_all` already apply (defense in depth;
+            // Aurora's own pgid should never share a pane's controlling tty in
+            // practice, but this keeps all four kill paths aligned). Use the
+            // process's real pgid (`pbi_pgid`).
             let pgid = info.pbi_pgid as i32;
-            if pgid > 1 && Some(pgid) != shell_pid && !pgids.contains(&pgid) {
+            let our_pgid = libc::getpgrp();
+            if pgid > 1 && Some(pgid) != shell_pid && pgid != our_pgid && !pgids.contains(&pgid) {
                 pgids.push(pgid);
             }
         }
@@ -672,7 +693,7 @@ pub fn pty_server_status(manager: State<'_, PtyManager>, id: String) -> Result<S
     // the lock. `Idle` short-circuits: capture was never armed, so there's no
     // detached-server flow to look for — skip the scan entirely.
     let (found_pgid, tty_dev, shell_pid): (Option<i32>, Option<u32>, Option<i32>) = {
-        let sessions = manager.sessions.lock().unwrap();
+        let sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
         let session = match sessions.get(&id) {
             None => return Ok("dead".to_string()),
             Some(s) => s,
@@ -686,18 +707,13 @@ pub fn pty_server_status(manager: State<'_, PtyManager>, id: String) -> Result<S
         // lock released here before any syscall
     };
 
-    // Fast path: a captured group that still exists is unambiguously alive.
+    // Fast path: a captured group that still exists (or exists but we lack
+    // permission to signal it) is unambiguously alive. See `pgid_alive`.
     if let Some(p) = found_pgid {
-        let result = unsafe { libc::killpg(p, 0) };
-        if result == 0 {
+        if pgid_alive(p) {
             return Ok("alive".to_string());
         }
-        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        if errno != libc::ESRCH {
-            // EPERM = group exists but we can't signal it → still alive
-            return Ok("alive".to_string());
-        }
-        // ESRCH → captured group is gone; fall through to the tier-4 tty scan.
+        // Gone (ESRCH) — fall through to the tier-4 tty scan.
     }
 
     // Tier 4: a detached server nx re-parented off the captured pgid may still
@@ -731,7 +747,7 @@ pub struct ForegroundState {
 /// the capture sampler already rely on. No new state — pure readback.
 #[tauri::command]
 pub fn pty_foreground_state(manager: State<'_, PtyManager>, id: String) -> Result<ForegroundState, String> {
-    let sessions = manager.sessions.lock().unwrap();
+    let sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
     let session = match sessions.get(&id) {
         None => return Ok(ForegroundState { running: false, pgid: None }),
         Some(s) => s,
@@ -779,7 +795,7 @@ pub fn pty_signal_server(manager: State<'_, PtyManager>, id: String, signal: i32
     // Snapshot the captured pgid plus the tty_dev/shell_pid the fallback scan
     // needs, under the lock; release it before any syscall.
     let (found_pgid, tty_dev, shell_pid): (Option<i32>, Option<u32>, Option<i32>) = {
-        let sessions = manager.sessions.lock().unwrap();
+        let sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
         match sessions.get(&id) {
             None => return Ok(false),
             Some(s) => (s.server.found(), s.tty_dev, s.shell_pgid),
@@ -789,8 +805,11 @@ pub fn pty_signal_server(manager: State<'_, PtyManager>, id: String, signal: i32
 
     // Fast path: a captured group that's still alive is the target (foreground
     // server that detached, or a `build && serve` chain the sampler froze on).
+    // `pgid != getpgrp()` mirrors the guard `group_teardown`/`kill_all`/
+    // `foreign_tty_pgids` already apply — defense in depth; a captured server
+    // pgid should never equal Aurora's own in practice.
     if let Some(pgid) = found_pgid {
-        if unsafe { libc::killpg(pgid, 0) } == 0 {
+        if pgid != unsafe { libc::getpgrp() } && unsafe { libc::killpg(pgid, 0) } == 0 {
             unsafe { libc::killpg(pgid, signal); }
             return Ok(true);
         }
@@ -1199,7 +1218,7 @@ mod real_pty_tests {
                 loop {
                     match reader.read(&mut chunk) {
                         Ok(0) | Err(_) => return, // PTY closed (test's killpg cleanup) — drain thread exits
-                        Ok(n) => output.lock().unwrap().extend_from_slice(&chunk[..n]),
+                        Ok(n) => output.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]),
                     }
                 }
             });
@@ -1257,7 +1276,7 @@ mod real_pty_tests {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             {
-                let buf = session.output.lock().unwrap();
+                let buf = session.output.lock().unwrap_or_else(|e| e.into_inner());
                 let text = String::from_utf8_lossy(&buf);
                 if let Some(pos) = text.rfind(marker) {
                     let rest = &text[pos + marker.len()..];

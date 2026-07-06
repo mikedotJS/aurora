@@ -96,7 +96,7 @@ export async function materializeEnvFiles(
       const abs = resolveEnvPath(dir, s.path);
       if (!abs) return { path: s.path, ok: false, error: "path escapes the workspace" };
       try {
-        await writeTextFile(abs, renderEnvContent(s.content, ctx));
+        await writeTextFile(dir, abs, renderEnvContent(s.content, ctx));
         return { path: s.path, ok: true };
       } catch (e) {
         return { path: s.path, ok: false, error: String(e) };
