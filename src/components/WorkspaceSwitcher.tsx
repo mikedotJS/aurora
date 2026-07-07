@@ -81,9 +81,13 @@ function SwitcherDropdown({ onClose }: { onClose: () => void }) {
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.metaKey && /^[1-9]$/.test(e.key)) {
+    // Match the physical Digit1..9 (e.code), not the produced char, so ⌘1..9
+    // works on layouts whose unshifted number row isn't digits (AZERTY, …) —
+    // mirroring the keymap.ts handler. Keep e.key as a fallback.
+    const dm = /^Digit([1-9])$/.exec(e.code);
+    if (e.metaKey && (dm || /^[1-9]$/.test(e.key))) {
       e.preventDefault();
-      choose(list[parseInt(e.key, 10) - 1]);
+      choose(list[parseInt(dm ? dm[1] : e.key, 10) - 1]);
       return;
     }
     if (e.key === "ArrowDown") {
