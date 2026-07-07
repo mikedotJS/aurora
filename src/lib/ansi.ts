@@ -131,7 +131,8 @@ export function ansiToLines(input: string): Seg[][] {
     } else if (ch === "\t") {
       buf += "  ";
     } else if (ch === "\b") {
-      flush();
+      // Erase the last char of the current run. Do NOT flush() first: flush
+      // empties buf, so the slice would always run on "" and never erase.
       buf = buf.slice(0, -1);
     } else {
       buf += ch;

@@ -86,6 +86,22 @@ function taskCmd(root: string, t: ScriptTask): string {
   return t.dir ? `cd ${root}/${t.dir} && ${t.cmd}` : t.cmd;
 }
 
+// A shell gate so split-script sibling panes wait for pane 0's one-time
+// dependency install before starting their servers on a fresh worktree. The
+// ready-flag lives in TMPDIR, keyed by the worktree path so concurrent creates
+// for different workspaces never collide on it.
+function depsReadyGate(execBase: string, prelude: string) {
+  const token = execBase.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "ws";
+  const flag = `"\${TMPDIR:-/tmp}/.aurora-deps-${token}"`;
+  return {
+    // Pane 0: clear any stale flag, install, flag ready, then run its task.
+    first: (cmd: string) => `rm -f ${flag}; ${prelude} && touch ${flag} && ${cmd}`,
+    // Siblings: wait up to ~180s (900 × 0.2s) for the flag, then run regardless
+    // so a failed install surfaces its own error rather than hanging forever.
+    wait: (cmd: string) => `__n=0; while [ ! -f ${flag} ] && [ $__n -lt 900 ]; do sleep 0.2; __n=$((__n+1)); done; ${cmd}`,
+  };
+}
+
 /** The key scripts are stored under: the git repo root, or the cwd otherwise. */
 export function scriptKey(pane: PaneState): string {
   return pane.repoRoot ?? pane.cwd;
@@ -165,11 +181,21 @@ export function runScript(
       for (let i = 0; i < need; i++) st.splitPane("h");
     }
     const panes = activeGroup(useStore.getState())?.panes ?? [];
+    // The prelude (dependency install) runs exactly once AND must finish before
+    // the sibling panes start their servers: a fresh worktree has no
+    // node_modules, so a server launched before the install completes fails.
+    // Pane 0 runs the install then drops a ready-flag; the other panes wait for
+    // that flag before starting. (Prepending the install to every pane instead
+    // would run concurrent installs and corrupt node_modules.)
+    const prelude = opts?.prelude;
+    const gate = prelude && execBase ? depsReadyGate(execBase, prelude) : null;
     for (let i = 0; i < n; i++) {
       if (!panes[i]) continue;
-      // The prelude (e.g. dependency install) runs once, before the first pane's task.
       const cmd = taskCmd(execBase, tasks[i]);
-      runWhenReady(panes[i].id, i === 0 && opts?.prelude ? `${opts.prelude} && ${cmd}` : cmd);
+      let full = cmd;
+      if (gate) full = i === 0 ? gate.first(cmd) : gate.wait(cmd);
+      else if (i === 0 && prelude) full = `${prelude} && ${cmd}`;
+      runWhenReady(panes[i].id, full);
     }
     useStore.getState().focusPane(0);
     return;

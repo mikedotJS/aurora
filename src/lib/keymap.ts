@@ -455,7 +455,13 @@ export function handleKeyDown(e: KeyboardEvent) {
       focusRoot();
       return;
     }
-    if (/^[1-9]$/.test(k)) return void (e.preventDefault(), s.selectTab(parseInt(k, 10) - 1), focusRoot());
+    // Match the physical Digit1..9 key (e.code), not just the produced char,
+    // so ⌘1..9 tab-select works on layouts whose unshifted number row isn't
+    // digits (AZERTY, …) — matching the ⌘0/Digit0 pattern above. Keep e.key as
+    // a fallback for environments that don't populate e.code.
+    const digitTab = /^Digit([1-9])$/.exec(e.code);
+    if (digitTab || /^[1-9]$/.test(k))
+      return void (e.preventDefault(), s.selectTab(parseInt(digitTab ? digitTab[1] : k, 10) - 1), focusRoot());
     if (k === "}" || k === "]") return void (e.preventDefault(), s.cycleTab(1), focusRoot());
     if (k === "{" || k === "[") return void (e.preventDefault(), s.cycleTab(-1), focusRoot());
     return;

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { tauri } from "../test/mocks/tauri";
 import { useStore, DEFAULT_SETTINGS, type GitlabMr } from "../src/state/store";
 import { defaultRepoConfig } from "../src/lib/repoConfig";
-import { startNotificationPoller, refreshRepoMrs, ensureGlabUser } from "../src/lib/notifications";
+import { startNotificationPoller, refreshRepoMrs, ensureGlabUser, classifyGlabFailure, GLAB_FAIL_LIMIT } from "../src/lib/notifications";
 
 function flush(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
@@ -138,10 +138,11 @@ describe("refreshRepoMrs — MR polling + notification diffing", () => {
 describe("startNotificationPoller — runs pollAll once, then guards against re-entry", () => {
   it("second call is a no-op; a root already flagged non-gitlab is skipped by the background poll", async () => {
     const root = "/repo/flagged";
-    // 1) Mark the repo non-gitlab via a direct failed poll.
+    // 1) Mark the repo non-gitlab via a direct failed poll. "glab-not-found"
+    //    (the missing-binary sentinel) parks the repo immediately.
     tauri.invoke({
       glab_mr_list: () => {
-        throw new Error("not a gitlab repo");
+        throw new Error("glab-not-found");
       },
     });
     await refreshRepoMrs(root);
@@ -180,6 +181,27 @@ describe("startNotificationPoller — runs pollAll once, then guards against re-
     } finally {
       globalThis.setInterval = realSetInterval;
     }
+  });
+
+});
+
+// classifyGlabFailure — the park-or-retry decision behind pollRepo's catch.
+// Regression: a single transient glab exit (network blip / 5xx / rate-limit)
+// used to permanently flag a repo non-gitlab, killing MR + Jira sync for the
+// whole session. Now only the missing-binary sentinel parks at once; other
+// errors park only after GLAB_FAIL_LIMIT consecutive failures.
+describe("classifyGlabFailure", () => {
+  it("parks immediately on the glab-not-found sentinel, regardless of prior count", () => {
+    expect(classifyGlabFailure(new Error("glab-not-found"), 0)).toEqual({ park: true, fails: 0 });
+    expect(classifyGlabFailure(new Error("glab-not-found"), 2)).toEqual({ park: true, fails: 0 });
+  });
+
+  it("does NOT park a transient failure until GLAB_FAIL_LIMIT consecutive failures", () => {
+    // A network/5xx/rate-limit error just increments the streak…
+    expect(classifyGlabFailure(new Error("dial tcp: i/o timeout"), 0)).toEqual({ park: false, fails: 1 });
+    expect(classifyGlabFailure(new Error("502 Bad Gateway"), 1)).toEqual({ park: false, fails: 2 });
+    // …and only parks once it reaches the limit.
+    expect(classifyGlabFailure(new Error("502 Bad Gateway"), GLAB_FAIL_LIMIT - 1)).toEqual({ park: true, fails: 0 });
   });
 });
 
