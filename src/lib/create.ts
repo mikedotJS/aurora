@@ -24,7 +24,11 @@ function allocOffset(repoRoot: string, presetOffset: "auto" | number | undefined
   for (const w of useStore.getState().workspaces) {
     if (w.repoId !== repoRoot) continue;
     const n = parseInt(w.env?.AURORA_PORT_OFFSET ?? "", 10);
-    if (!Number.isNaN(n)) used.add(n);
+    // A same-repo lane with no explicit offset (the main checkout, or any lane
+    // not created through runCreate) runs at the effective offset 0 — the shell
+    // expands the unset $AURORA_PORT_OFFSET to 0 — so reserve slot 0 for it,
+    // else the first auto workspace collides with the main checkout's ports.
+    used.add(Number.isNaN(n) ? 0 : n);
   }
   let off = 0;
   while (used.has(off)) off += PORT_STEP;
@@ -196,7 +200,28 @@ export function buildCreateSpec(input: BuildCreateSpecInput): CreateSpec {
   };
 }
 
-export async function runCreate(spec: CreateSpec): Promise<CreateResult> {
+// Serialize creates per repoRoot. allocOffset picks a collision-free
+// AURORA_PORT_OFFSET by scanning the store's live workspaces, but the picked
+// offset isn't registered until createWorkspace — and an await
+// (materializeEnvFiles) sits between the read and that registration. Two
+// overlapping creates for the same repo would otherwise both read a stale
+// used-offset set and allocate the same offset, silently defeating port
+// isolation. A per-repo promise chain makes allocOffset→createWorkspace
+// effectively atomic; distinct repos still run concurrently.
+const createChains = new Map<string, Promise<unknown>>();
+
+export function runCreate(spec: CreateSpec): Promise<CreateResult> {
+  const prev = createChains.get(spec.repoRoot) ?? Promise.resolve();
+  const next = prev.then(
+    () => runCreateInner(spec),
+    () => runCreateInner(spec),
+  );
+  // Store an error-swallowing tail so one failed create never wedges the chain.
+  createChains.set(spec.repoRoot, next.catch(() => {}));
+  return next;
+}
+
+async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
   // Local sanity first (cheap), then the repo's authoritative validate-branch-name
   // rule when present — so a workspace can never be created on a name that would
   // fail the repo's pre-push hook. Passes through when no validator is configured.
@@ -243,6 +268,12 @@ export async function runCreate(spec: CreateSpec): Promise<CreateResult> {
     }
   }
 
+  // Resolve the install command BEFORE createWorkspace so no await sits between
+  // createWorkspace (which makes the new workspace active) and the runScript
+  // call below — otherwise the active workspace could change during the await
+  // and a split on-open script would fan out into the wrong workspace's panes.
+  const install = await installCommand(spec.repoRoot);
+
   let wsId: string;
   try {
     wsId = useStore.getState().createWorkspace({
@@ -266,8 +297,8 @@ export async function runCreate(spec: CreateSpec): Promise<CreateResult> {
   }
 
   // Install dependencies into the fresh worktree (it has no node_modules), then
-  // run the on-open script once the new workspace's panes exist.
-  const install = await installCommand(spec.repoRoot);
+  // run the on-open script once the new workspace's panes exist. `install` was
+  // resolved above (before createWorkspace) so this stretch has no await.
   const st = useStore.getState();
   const w = st.workspaces.find((x) => x.id === wsId);
   const g = w?.tabs[w.active];

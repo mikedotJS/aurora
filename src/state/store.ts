@@ -9,6 +9,7 @@ import type { AccentKey, FontKey } from "../lib/theme";
 import { applyTheme } from "../lib/theme";
 import type { Suggestion } from "../ai/suggest";
 import { ghostFor } from "../lib/commands";
+import { shQuote } from "../lib/shellQuote";
 import type { DirEntry } from "../lib/sys";
 import { savePersisted, loadRepos, saveRepos, type PersistedWs } from "../lib/workspace";
 import { loadDirFrecency, saveDirFrecency, bumpDir } from "../lib/dirFrecency";
@@ -829,9 +830,14 @@ export const useStore = create<StoreState>((set, get) => ({
       const closedPtyIds = removed.tabs
         .flatMap((g) => g.panes.map((p) => p.ptyId))
         .filter((id): id is string => id !== null);
-      const workspaces = s.workspaces.filter((w) => w.id !== id);
+      const filtered = s.workspaces.filter((w) => w.id !== id);
       const activeWs =
-        s.activeWs === id ? workspaces[Math.min(idx, workspaces.length - 1)].id : s.activeWs;
+        s.activeWs === id ? filtered[Math.min(idx, filtered.length - 1)].id : s.activeWs;
+      // If we re-pointed activeWs, mount the new active workspace — a
+      // restored-but-never-visited neighbor defaults to mounted:false and would
+      // otherwise render a blank pane area with no shell (mirrors switchWorkspace).
+      const workspaces =
+        s.activeWs === id ? filtered.map((w) => (w.id === activeWs ? { ...w, mounted: true } : w)) : filtered;
       savePersisted(workspaces, activeWs);
       // Drop a stale Changes overlay tied to the removed workspace.
       const changesWsId = s.changesWsId === id ? null : s.changesWsId;
@@ -878,7 +884,17 @@ export const useStore = create<StoreState>((set, get) => ({
   markExited: (paneId) =>
     set((s) => {
       const pane = findPane(s, paneId);
-      const workspaces = patchPane(s.workspaces, paneId, { exited: true, rawMode: false });
+      const workspaces = patchPane(s.workspaces, paneId, (p) => {
+        // A dead shell can't emit the OSC-133;D end marker, and the liveness
+        // poll skips exited panes — so end any still-running block here, else it
+        // reads as 'running — ⌃C to stop' forever with the prompt hidden.
+        if (p.blocks.length && p.blocks[p.blocks.length - 1].running) {
+          const blocks = p.blocks.slice();
+          blocks[blocks.length - 1] = { ...blocks[blocks.length - 1], running: false, exitCode: null };
+          return { exited: true, rawMode: false, blocks };
+        }
+        return { exited: true, rawMode: false };
+      });
       // A dead shell has nothing running — drop its running-state entries
       // (runtime-only maps; not persisted, see the Requirement note below).
       if (!pane?.ptyId) return { workspaces };
@@ -1054,8 +1070,11 @@ export const useStore = create<StoreState>((set, get) => ({
       if (i < active) active -= 1;
       else if (i === active) active = Math.min(active, tabs.length - 1);
       const closedPtyIds = closed ? closed.panes.map((p) => p.ptyId).filter((id): id is string => id !== null) : [];
+      // If the closed tab was the server tab, its panes (and their PTYs) are
+      // gone — clear serverTabId so it doesn't dangle at a removed group id.
+      const clearServer = closed != null && closed.id === w.serverTabId;
       return {
-        workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })),
+        workspaces: patchActiveWs(s.workspaces, s.activeWs, () => (clearServer ? { tabs, active, serverTabId: null } : { tabs, active })),
         serverStatus: omitKeys(s.serverStatus, closedPtyIds),
         foregroundState: omitKeys(s.foregroundState, closedPtyIds),
       };
@@ -1103,7 +1122,12 @@ export const useStore = create<StoreState>((set, get) => ({
       };
       const tabs = w.tabs.map((t, i) => (i === dest ? merged : t)).filter((_, i) => i !== src);
       const active = dest > src ? dest - 1 : dest;
-      return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })) };
+      // serverTabId is a stable group id. Merging the server tab into another
+      // removes the source group but moves its server panes into the merged
+      // (dest) group — so re-point serverTabId there, else it dangles and
+      // serversUp()/stopServers silently lose track of the running servers.
+      const serverTabId = source.id === w.serverTabId ? target.id : w.serverTabId;
+      return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active, serverTabId })) };
     }),
 
   splitPane: (dir) =>
@@ -1321,7 +1345,7 @@ export const useStore = create<StoreState>((set, get) => ({
       workspaces: patchPane(s.workspaces, paneId, (p) => {
         const c = p.completion;
         if (!c || !c.items.length) return {};
-        const input = p.input.slice(0, c.tokenStart) + c.dir + c.items[c.index].name + "/";
+        const input = p.input.slice(0, c.tokenStart) + c.dir + shQuote(c.items[c.index].name) + "/";
         return { input, completion: null, suggestion: null, ghost: recomputeGhost({ ...p, input, suggestion: null }, s.settings.ghost) };
       }),
     })),
@@ -1351,7 +1375,8 @@ export const useStore = create<StoreState>((set, get) => ({
         if (path == null) return {};
         // Completes the line without running it (decision A) — caret ends at EOL
         // because `input` is just a string; the caret is rendered at input end.
-        const input = `cd ${path}`;
+        // Shell-quote so a path with spaces ("Google Drive") stays one word.
+        const input = `cd ${shQuote(path)}`;
         return { input, cdSuggest: null, suggestion: null, ghost: recomputeGhost({ ...p, input, suggestion: null }, s.settings.ghost) };
       }),
     })),

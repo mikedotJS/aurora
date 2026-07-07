@@ -401,7 +401,7 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
         </div>
 
         {/* xterm overlay for full-screen programs */}
-        <Terminal paneId={pane.id} />
+        <Terminal paneId={pane.id} isActive={isActive} />
 
         {pane.rawMode && (
           <span

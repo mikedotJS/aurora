@@ -186,6 +186,20 @@ describe("SwitcherDropdown", () => {
     expect(useStore.getState().activeWs).toBe("w2");
   });
 
+  it("⌘<N> jumps by the physical Digit key on non-digit layouts (AZERTY)", async () => {
+    // On AZERTY the unshifted top row yields '&é"…', not digits, so matching
+    // e.key would silently fail. The handler must use e.code (Digit2).
+    const workspaces: Workspace[] = [
+      makeWorkspace({ id: "w1", title: "Alpha" }),
+      makeWorkspace({ id: "w2", title: "Beta" }),
+    ];
+    useStore.setState({ workspaces, activeWs: "w1" }, false);
+    const { getByPlaceholderText, queryByRole } = openDropdown("Alpha");
+    fireEvent.keyDown(getByPlaceholderText("find a workspace…"), { key: "é", code: "Digit2", metaKey: true });
+    await waitFor(() => expect(queryByRole("listbox")).toBeNull());
+    expect(useStore.getState().activeWs).toBe("w2");
+  });
+
   it("⌘<N> out of range is a no-op (stays open, no switch)", () => {
     const workspaces: Workspace[] = [makeWorkspace({ id: "w1", title: "Alpha" })];
     useStore.setState({ workspaces, activeWs: "w1" }, false);

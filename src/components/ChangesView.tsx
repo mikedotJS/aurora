@@ -116,6 +116,7 @@ export function ChangesView({ wsId }: { wsId: string }) {
     await reload();
   };
   const onOpenMr = async () => {
+    if (mrBusy) return; // the pill only looks disabled — actually gate re-entry
     if (ws?.mr?.url) return void openUrl(ws.mr.url);
     if (!branch) return;
     setMrBusy(true);

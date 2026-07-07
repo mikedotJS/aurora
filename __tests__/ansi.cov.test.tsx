@@ -52,15 +52,12 @@ describe("ansiToLines — plain text & line splitting", () => {
     expect(text(lines)).toEqual(["a  b"]);
   });
 
-  it("backspace flushes the buffer as a segment boundary (the slice(0,-1) is a no-op post-flush)", () => {
-    // flush() runs first and already clears buf, so the subsequent buf.slice(0,-1)
-    // operates on an empty string — backspace does not visually delete a character,
-    // it just forces a new segment. This documents the real (perhaps surprising)
-    // current behavior rather than an idealized one.
+  it("backspace erases the last char of the current run", () => {
+    // "abc", then \b removes the 'c', then 'd' → "abd" as one unbroken run.
     const lines = ansiToLines("abc\bd");
     expect(lines.length).toBe(1);
-    expect(lines[0].map((s) => s.text)).toEqual(["abc", "d"]);
-    expect(text(lines)).toEqual(["abcd"]);
+    expect(lines[0].map((s) => s.text)).toEqual(["abd"]);
+    expect(text(lines)).toEqual(["abd"]);
   });
 
   it("backspace on an empty buffer is a no-op (does not throw)", () => {

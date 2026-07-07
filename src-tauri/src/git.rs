@@ -70,10 +70,12 @@ pub fn git_repo_info(cwd: String) -> Option<RepoInfo> {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| main_root.clone());
-    // origin/HEAD → "origin/main"; take the last path segment. Fall back to main.
+    // origin/HEAD → "origin/main"; strip only the "origin/" remote prefix. Must
+    // NOT split on the last slash — a namespaced default like "origin/release/v2"
+    // would truncate to "v2" and then fail as a worktree base ref. Fall back to main.
     let default_branch = git(&root, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"])
         .ok()
-        .and_then(|s| s.rsplit('/').next().map(|x| x.to_string()))
+        .and_then(|s| s.strip_prefix("origin/").map(|x| x.to_string()))
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "main".to_string());
     let current_branch = git(&root, &["branch", "--show-current"])
@@ -113,8 +115,9 @@ pub fn worktree_list(root: String) -> Result<Vec<Worktree>, String> {
             }
         } else if let Some(b) = line.strip_prefix("branch ") {
             if let Some(w) = cur.as_mut() {
-                // "refs/heads/foo" → "foo"
-                w.branch = Some(b.rsplit('/').next().unwrap_or(b).to_string());
+                // "refs/heads/foo" → "foo"; strip the ref prefix, don't split on
+                // the last slash (would truncate a namespaced "release/v2" → "v2").
+                w.branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
             }
         }
     }

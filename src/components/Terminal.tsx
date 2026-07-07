@@ -45,7 +45,7 @@ const ZSH_INIT =
   "autoload -Uz add-zsh-hook 2>/dev/null && { add-zsh-hook preexec _aurora_pe; add-zsh-hook precmd _aurora_pc; }; " +
   "printf '\\e]7;file://%s%s\\a' \"${HOST:-localhost}\" \"$PWD\"; printf '\\e]1337;AuroraReady\\a'; clear\n";
 
-export function Terminal({ paneId }: { paneId: number }) {
+export function Terminal({ paneId, isActive }: { paneId: number; isActive: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -223,18 +223,16 @@ export function Terminal({ paneId }: { paneId: number }) {
               promptTimerRef.current = null;
             }
             term.write(bytes);
-            if (text.includes("\x1b[?1049l") || text.includes("\x1b[?1047l")) {
-              st.setRawMode(paneId, false);
-            } else {
-              // a program that didn't use alt-screen (claude, a REPL) returned to
-              // the prompt → precmd emits OSC 133;D → back to blocks.
-              // eslint-disable-next-line no-control-regex
-              const m = text.match(/\x1b\]133;D;?(\d*)/);
-              if (m) {
-                st.endBlock(paneId, m[1] ? parseInt(m[1], 10) : null);
-                st.setRawMode(paneId, false);
-              }
-            }
+            const leftAlt = text.includes("\x1b[?1049l") || text.includes("\x1b[?1047l");
+            // A program returning to the prompt emits OSC 133;D. It can arrive in
+            // the SAME chunk as the alt-screen-leave (vim exits → precmd fires
+            // right away), so handle it independently of `leftAlt` — an if/else
+            // would drop the exit marker and leave the block stuck showing
+            // "running" with the prompt hidden.
+            // eslint-disable-next-line no-control-regex
+            const m = text.match(/\x1b\]133;D;?(\d*)/);
+            if (m) st.endBlock(paneId, m[1] ? parseInt(m[1], 10) : null);
+            if (leftAlt || m) st.setRawMode(paneId, false);
             return;
           }
 
@@ -346,9 +344,13 @@ export function Terminal({ paneId }: { paneId: number }) {
     const term = termRef.current;
     if (!term) return;
     term.options.disableStdin = !rawMode;
-    if (rawMode) term.focus();
-    else document.getElementById("aurora-root")?.focus();
-  }, [rawMode]);
+    // Only the active pane may grab/return keyboard focus. A background split
+    // pane toggling raw mode must not steal focus and misdirect keystrokes.
+    if (isActive) {
+      if (rawMode) term.focus();
+      else document.getElementById("aurora-root")?.focus();
+    }
+  }, [rawMode, isActive]);
 
   return (
     <div

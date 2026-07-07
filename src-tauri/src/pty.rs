@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -28,6 +28,11 @@ enum ServerCapture {
     Failed,
     /// A distinct foreground pgid was found and recorded — kill target for Stop/⌘Q.
     Found(i32),
+    /// Terminal: a prior capture's group is gone and a tier-4 tty scan confirmed
+    /// the pane clear. Short-circuits `pty_server_status` (like `Idle`) so the
+    /// 1.5s poll stops re-running the expensive process-table scan every tick
+    /// once a command finishes. Reset to `Pending` when a new command re-arms.
+    Done,
 }
 
 impl ServerCapture {
@@ -42,7 +47,11 @@ impl ServerCapture {
 
 /// One live shell session.
 struct PtySession {
-    writer: Box<dyn Write + Send>,
+    // Behind its own Arc<Mutex> — NOT the sessions-map lock — so a blocking
+    // write to one pane's PTY (a foreground child not draining stdin) can't stall
+    // every other PTY op app-wide (other panes' input, resize, the sampler, and
+    // kill_all/⌘Q all take the map lock).
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
     /// pgid of the shell process (== pid because portable-pty calls setsid()).
@@ -235,7 +244,7 @@ pub fn pty_spawn(
     manager.sessions.lock().unwrap_or_else(|e| e.into_inner()).insert(
         id.clone(),
         PtySession {
-            writer,
+            writer: Arc::new(Mutex::new(writer)),
             master: pair.master,
             killer,
             shell_pgid,
@@ -254,13 +263,17 @@ pub fn pty_spawn(
 /// Write keystrokes / a command line into a session.
 #[tauri::command]
 pub fn pty_write(manager: State<'_, PtyManager>, id: String, data: String) -> Result<(), String> {
-    let mut sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
-    let session = sessions.get_mut(&id).ok_or("no such pty session")?;
-    session
-        .writer
-        .write_all(data.as_bytes())
-        .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())?;
+    // Clone the writer Arc while holding the map lock only briefly, then drop the
+    // map guard BEFORE the (potentially blocking) write, so a stalled write pins
+    // just this pane's writer, never the whole sessions map.
+    let writer = {
+        let sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let session = sessions.get(&id).ok_or("no such pty session")?;
+        Arc::clone(&session.writer)
+    };
+    let mut writer = writer.lock().unwrap_or_else(|e| e.into_inner());
+    writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -701,6 +714,7 @@ pub fn pty_server_status(manager: State<'_, PtyManager>, id: String) -> Result<S
         match &session.server {
             ServerCapture::Pending => return Ok("capturing".to_string()),
             ServerCapture::Idle => return Ok("uncaptured".to_string()),
+            ServerCapture::Done => return Ok("uncaptured".to_string()),
             ServerCapture::Failed => (None, session.tty_dev, session.shell_pgid),
             ServerCapture::Found(p) => (Some(*p), session.tty_dev, session.shell_pgid),
         }
@@ -721,6 +735,19 @@ pub fn pty_server_status(manager: State<'_, PtyManager>, id: String) -> Result<S
     if let Some(dev) = tty_dev {
         if tty_has_foreign_process(dev, shell_pid) {
             return Ok("alive".to_string());
+        }
+    }
+
+    // The capture's group is gone and the tty scan came back clear: this pane
+    // has no running server. Transition to the terminal `Done` state so the poll
+    // stops re-running the expensive scan every tick until a new command re-arms
+    // the capture. Guard against clobbering a concurrent re-arm (Pending/Found).
+    {
+        let mut sessions = manager.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(s) = sessions.get_mut(&id) {
+            if matches!(s.server, ServerCapture::Failed | ServerCapture::Found(_)) {
+                s.server = ServerCapture::Done;
+            }
         }
     }
 
@@ -1070,6 +1097,14 @@ mod tests {
     #[test]
     fn should_rearm_true_for_failed() {
         assert!(should_rearm(&ServerCapture::Failed, false));
+    }
+
+    #[test]
+    fn should_rearm_true_for_done() {
+        // A terminal `Done` capture (server finished, tty scanned clear) must
+        // re-arm when a new command runs — otherwise the pane could never detect
+        // its next server.
+        assert!(should_rearm(&ServerCapture::Done, false));
     }
 
     // ── is_foreign_tty_process — tier-4 running scan predicate (sticky-running-

@@ -10,6 +10,7 @@ import { keySet, keyDelete } from "./keychain";
 import { resolveCd, listDir } from "./sys";
 import { gatherProjectContext, formatProjectContext } from "./projectContext";
 import { runScript } from "./scripts";
+import { shQuote } from "./shellQuote";
 import { ensurePtyPoll, paneRunning } from "./running";
 import { loadDirFrecency, topDirs } from "./dirFrecency";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -158,7 +159,7 @@ function runInShell(pane: PaneState, cmd: string) {
   s.startBlock(pane.id, cmd, pane.cwd);
   // Hand the pane to interactive programs that don't use the alternate screen.
   if (isInteractive(trimmed)) s.setRawMode(pane.id, true);
-  if (pane.ptyId) {
+  if (pane.ptyId && !pane.exited) {
     pty.write(pane.ptyId, cmd + "\n");
     // sticky-running-server-tabs: capture this command's process group too, not
     // just the dedicated "Run servers" flow — a typed `nx serve --no-tui` (or
@@ -299,7 +300,7 @@ async function triggerFolderCompletion(pane: PaneState, tok: PathToken) {
     return;
   }
   if (matches.length === 1) {
-    s.setInput(pane.id, cur.input.slice(0, tok.tokenStart) + tok.dir + matches[0].name + "/");
+    s.setInput(pane.id, cur.input.slice(0, tok.tokenStart) + tok.dir + shQuote(matches[0].name) + "/");
     return;
   }
   // Many: extend to the longest shared prefix, then list the candidates.
@@ -455,7 +456,13 @@ export function handleKeyDown(e: KeyboardEvent) {
       focusRoot();
       return;
     }
-    if (/^[1-9]$/.test(k)) return void (e.preventDefault(), s.selectTab(parseInt(k, 10) - 1), focusRoot());
+    // Match the physical Digit1..9 key (e.code), not just the produced char,
+    // so ⌘1..9 tab-select works on layouts whose unshifted number row isn't
+    // digits (AZERTY, …) — matching the ⌘0/Digit0 pattern above. Keep e.key as
+    // a fallback for environments that don't populate e.code.
+    const digitTab = /^Digit([1-9])$/.exec(e.code);
+    if (digitTab || /^[1-9]$/.test(k))
+      return void (e.preventDefault(), s.selectTab(parseInt(digitTab ? digitTab[1] : k, 10) - 1), focusRoot());
     if (k === "}" || k === "]") return void (e.preventDefault(), s.cycleTab(1), focusRoot());
     if (k === "{" || k === "[") return void (e.preventDefault(), s.cycleTab(-1), focusRoot());
     return;

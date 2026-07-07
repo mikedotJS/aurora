@@ -395,8 +395,14 @@ describe("runScript — split", () => {
     runScript(p0.id, "script1", { prelude: "echo boot" });
     const calls = tauri.calls().filter((c) => c.cmd === "pty_write");
     expect(calls).toHaveLength(2);
-    expect(calls[0].args).toEqual({ id: "pty-0", data: "echo boot && api\n" });
-    expect(calls[1].args).toEqual({ id: "pty-1", data: "web\n" });
+    // With an install prelude, pane 0 runs it once then drops a ready-flag, and
+    // the sibling pane WAITS for that flag before starting its server (a fresh
+    // worktree has no node_modules yet). Regression: siblings used to launch
+    // immediately (data was just "web\n"), so half the servers died on open.
+    expect(calls[0].args.id).toBe("pty-0");
+    expect(calls[0].args.data).toMatch(/^rm -f .*\.aurora-deps.*; echo boot && touch .*\.aurora-deps.* && api\n$/);
+    expect(calls[1].args.id).toBe("pty-1");
+    expect(calls[1].args.data).toMatch(/^__n=0; while \[ ! -f .*\.aurora-deps.*done; web\n$/);
     expect(useStore.getState().workspaces[0].tabs[0].active).toBe(0);
   });
 

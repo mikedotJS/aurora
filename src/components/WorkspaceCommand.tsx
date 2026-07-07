@@ -277,6 +277,11 @@ export function WorkspaceCommand() {
     openForm(source);
   };
 
+  // Mirror the render-time `disabled` flag (SourceRowGroup) so keyboard
+  // activation (Enter/Tab) can't bypass a source's visual disabled state — e.g.
+  // the "a Jira issue" row when Jira isn't connected.
+  const sourceDisabled = (key: CreateSource) => (key === "jira" && !jiraConnected) || noContext;
+
   const activateAt = (i: number) => {
     const item = items[i];
     if (!item) return;
@@ -286,6 +291,7 @@ export function WorkspaceCommand() {
     } else if (item.kind === "jira") {
       openJiraIssue(item.issue);
     } else {
+      if (sourceDisabled(item.src.key)) return;
       quickCreate(item.src.key);
     }
   };
@@ -299,8 +305,9 @@ export function WorkspaceCommand() {
     if (e.key === "Tab") {
       e.preventDefault();
       const item = items[clamped];
-      if (item?.kind === "source") openForm(item.src.key);
-      else if (item?.kind === "jira") openJiraIssue(item.issue);
+      if (item?.kind === "source") {
+        if (!sourceDisabled(item.src.key)) openForm(item.src.key);
+      } else if (item?.kind === "jira") openJiraIssue(item.issue);
     }
   };
 

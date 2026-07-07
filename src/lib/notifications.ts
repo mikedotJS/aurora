@@ -11,7 +11,30 @@ type Snap = Map<number, { updated: string; draft: boolean; notes: number; sha: s
 
 const snapshots = new Map<string, Snap>();
 const notGitlab = new Set<string>();
+// Consecutive glab_mr_list failures per repo. A missing binary is parked at
+// once; any other error (no GitLab remote, but also a transient network/5xx/
+// rate-limit blip) only parks after several failures in a row, so one hiccup
+// doesn't permanently kill a real GitLab repo's MR/Jira integration.
+const glabFails = new Map<string, number>();
+export const GLAB_FAIL_LIMIT = 3;
 let timer: number | null = null;
+
+/**
+ * Decide whether a glab_mr_list failure should permanently park a repo as
+ * non-GitLab, given the running consecutive-failure count for that repo.
+ *
+ * - "glab-not-found" (the missing-binary sentinel) is permanent for every repo
+ *   → park immediately.
+ * - Any other error (no GitLab remote, but also a transient network/5xx/rate-
+ *   limit blip) parks only after GLAB_FAIL_LIMIT consecutive failures, so one
+ *   hiccup doesn't kill a real GitLab repo's MR/Jira integration for the whole
+ *   session. A single success (caller resets the count) clears the streak.
+ */
+export function classifyGlabFailure(err: unknown, prevFails: number): { park: boolean; fails: number } {
+  if (String(err).includes("glab-not-found")) return { park: true, fails: 0 };
+  const fails = prevFails + 1;
+  return fails >= GLAB_FAIL_LIMIT ? { park: true, fails: 0 } : { park: false, fails };
+}
 
 const AC = "oklch(0.83 0.115 184)";
 const INFO = "oklch(0.72 0.1 255)";
@@ -41,10 +64,17 @@ async function pollRepo(root: string) {
   let mrs: GitlabMr[];
   try {
     mrs = await invoke<GitlabMr[]>("glab_mr_list", { cwd: root });
-  } catch {
-    notGitlab.add(root); // glab missing / not authed / not a GitLab repo
+  } catch (e) {
+    const { park, fails } = classifyGlabFailure(e, glabFails.get(root) ?? 0);
+    if (park) {
+      notGitlab.add(root);
+      glabFails.delete(root);
+    } else {
+      glabFails.set(root, fails);
+    }
     return;
   }
+  glabFails.delete(root); // success → reset the failure streak
   const st = useStore.getState();
   st.setRepoMrs(root, mrs);
   syncJiraForRepo(root, mrs);
@@ -136,6 +166,7 @@ export function startNotificationPoller() {
 /** Force-refresh a repo's MR cache (used when opening the MR sheet). */
 export function refreshRepoMrs(root: string): Promise<void> {
   notGitlab.delete(root);
+  glabFails.delete(root); // manual refresh → give the repo a clean slate
   return pollRepo(root);
 }
 
