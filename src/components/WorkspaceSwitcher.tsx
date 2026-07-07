@@ -65,8 +65,11 @@ function SwitcherDropdown({ onClose }: { onClose: () => void }) {
   }, []);
 
   const q = query.trim().toLowerCase();
+  // Home is a top-level TitleBar entry, not a workspace — keep it out of the
+  // switcher just as the rail does (WorkspaceRail excludes `kind === "home"`),
+  // so it never shows up bucketed under a phantom "local" repo.
   const list = workspaces.filter(
-    (w) => !q || [w.issueKey, w.title, w.branch].some((x) => x?.toLowerCase().includes(q)),
+    (w) => w.kind !== "home" && (!q || [w.issueKey, w.title, w.branch].some((x) => x?.toLowerCase().includes(q))),
   );
   const clamped = Math.min(sel, Math.max(0, list.length - 1));
 

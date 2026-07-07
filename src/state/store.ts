@@ -702,6 +702,16 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const workspaces: Workspace[] = boot.restored.map(rehydrate);
 
+    // Migration: older builds could persist the home directory itself as a
+    // manual lane (booting in `~` synthesized a repoId:null "workspace"). The
+    // design forbids that — `~` is only ever the top-level Home terminal, never
+    // a repo or a workspace — so drop any restored non-home lane rooted at
+    // `home`. It leaves the real Home terminal (ensured below) as the sole `~`
+    // entry and clears the phantom "Home" from the rail's `local` bucket.
+    for (let i = workspaces.length - 1; i >= 0; i--) {
+      if (workspaces[i]!.kind !== "home" && workspaces[i]!.dir === home) workspaces.splice(i, 1);
+    }
+
     // Always ensure the permanent Home terminal exists. Match on `kind`, never
     // on id/dir, so a restored Home is reused (not duplicated) even across a
     // rename of `home`. Unshifted so it sits first; rail ordering is driven by
