@@ -223,18 +223,16 @@ export function Terminal({ paneId }: { paneId: number }) {
               promptTimerRef.current = null;
             }
             term.write(bytes);
-            if (text.includes("\x1b[?1049l") || text.includes("\x1b[?1047l")) {
-              st.setRawMode(paneId, false);
-            } else {
-              // a program that didn't use alt-screen (claude, a REPL) returned to
-              // the prompt → precmd emits OSC 133;D → back to blocks.
-              // eslint-disable-next-line no-control-regex
-              const m = text.match(/\x1b\]133;D;?(\d*)/);
-              if (m) {
-                st.endBlock(paneId, m[1] ? parseInt(m[1], 10) : null);
-                st.setRawMode(paneId, false);
-              }
-            }
+            const leftAlt = text.includes("\x1b[?1049l") || text.includes("\x1b[?1047l");
+            // A program returning to the prompt emits OSC 133;D. It can arrive in
+            // the SAME chunk as the alt-screen-leave (vim exits → precmd fires
+            // right away), so handle it independently of `leftAlt` — an if/else
+            // would drop the exit marker and leave the block stuck showing
+            // "running" with the prompt hidden.
+            // eslint-disable-next-line no-control-regex
+            const m = text.match(/\x1b\]133;D;?(\d*)/);
+            if (m) st.endBlock(paneId, m[1] ? parseInt(m[1], 10) : null);
+            if (leftAlt || m) st.setRawMode(paneId, false);
             return;
           }
 

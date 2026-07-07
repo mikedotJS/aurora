@@ -1054,8 +1054,11 @@ export const useStore = create<StoreState>((set, get) => ({
       if (i < active) active -= 1;
       else if (i === active) active = Math.min(active, tabs.length - 1);
       const closedPtyIds = closed ? closed.panes.map((p) => p.ptyId).filter((id): id is string => id !== null) : [];
+      // If the closed tab was the server tab, its panes (and their PTYs) are
+      // gone — clear serverTabId so it doesn't dangle at a removed group id.
+      const clearServer = closed != null && closed.id === w.serverTabId;
       return {
-        workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })),
+        workspaces: patchActiveWs(s.workspaces, s.activeWs, () => (clearServer ? { tabs, active, serverTabId: null } : { tabs, active })),
         serverStatus: omitKeys(s.serverStatus, closedPtyIds),
         foregroundState: omitKeys(s.foregroundState, closedPtyIds),
       };
@@ -1103,7 +1106,12 @@ export const useStore = create<StoreState>((set, get) => ({
       };
       const tabs = w.tabs.map((t, i) => (i === dest ? merged : t)).filter((_, i) => i !== src);
       const active = dest > src ? dest - 1 : dest;
-      return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active })) };
+      // serverTabId is a stable group id. Merging the server tab into another
+      // removes the source group but moves its server panes into the merged
+      // (dest) group — so re-point serverTabId there, else it dangles and
+      // serversUp()/stopServers silently lose track of the running servers.
+      const serverTabId = source.id === w.serverTabId ? target.id : w.serverTabId;
+      return { workspaces: patchActiveWs(s.workspaces, s.activeWs, () => ({ tabs, active, serverTabId })) };
     }),
 
   splitPane: (dir) =>

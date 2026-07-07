@@ -93,10 +93,14 @@ function livePanes(): Array<{ ptyId: string }> {
 }
 
 /** True when `ptyId` still belongs to some (live or not) pane anywhere. */
+// True only when a *live* (non-exited) pane still owns this ptyId. Mirrors
+// livePanes' `!p.exited` filter: a pane can be marked exited while a probe is
+// in-flight (markExited leaves ptyId set), and writing the probe result back for
+// an exited pane resurrects a stale "running" badge that never clears.
 function ptyStillReferenced(ptyId: string): boolean {
   return useStore
     .getState()
-    .workspaces.some((w) => w.tabs.some((t) => t.panes.some((p) => p.ptyId === ptyId)));
+    .workspaces.some((w) => w.tabs.some((t) => t.panes.some((p) => p.ptyId === ptyId && !p.exited)));
 }
 
 /**

@@ -2,7 +2,7 @@
 // Rendered inside the command palette once a source is chosen. Presets and the
 // branch-naming default come from the per-repo config (workspace-config).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../state/store";
 import { gitBranches, validateBranchNameBackend } from "../lib/sys";
 import { runCreate, buildCreateSpec, type CreateSource } from "../lib/create";
@@ -72,6 +72,11 @@ export function WorkspaceScopeForm({
   const defaultBase = selected?.baseOverride ?? cfg.defaults.baseBranch ?? repo.defaultBranch ?? "main";
   const [branch, setBranch] = useState(initial.branch);
   const [branchTouched, setBranchTouched] = useState(false);
+  // Mirror of branchTouched that async callbacks can read *live*. The resolver
+  // effect below only depends on [repo.root], so its closure would otherwise
+  // capture branchTouched=false forever and a late resolve could clobber a name
+  // the user has since typed.
+  const branchTouchedRef = useRef(false);
   const [branchValid, setBranchValid] = useState<boolean | null>(null);
   const [branchNote, setBranchNote] = useState<string | null>(null);
   // initial.baseBranch seeds the base for clone (the active workspace's branch);
@@ -111,7 +116,7 @@ export function WorkspaceScopeForm({
     if (!initial.issueKey || source === "describe") return;
     let live = true;
     resolveBranchName(cfg.defaults.branchNaming, issue, repo.root, model).then((r) => {
-      if (live && !branchTouched && r.name) setBranch(r.name);
+      if (live && !branchTouchedRef.current && r.name) setBranch(r.name);
     });
     return () => {
       live = false;
@@ -276,6 +281,7 @@ export function WorkspaceScopeForm({
             <input
               value={branch}
               onChange={(e) => {
+                branchTouchedRef.current = true;
                 setBranchTouched(true);
                 setBranch(e.target.value);
               }}

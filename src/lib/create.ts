@@ -196,7 +196,28 @@ export function buildCreateSpec(input: BuildCreateSpecInput): CreateSpec {
   };
 }
 
-export async function runCreate(spec: CreateSpec): Promise<CreateResult> {
+// Serialize creates per repoRoot. allocOffset picks a collision-free
+// AURORA_PORT_OFFSET by scanning the store's live workspaces, but the picked
+// offset isn't registered until createWorkspace — and an await
+// (materializeEnvFiles) sits between the read and that registration. Two
+// overlapping creates for the same repo would otherwise both read a stale
+// used-offset set and allocate the same offset, silently defeating port
+// isolation. A per-repo promise chain makes allocOffset→createWorkspace
+// effectively atomic; distinct repos still run concurrently.
+const createChains = new Map<string, Promise<unknown>>();
+
+export function runCreate(spec: CreateSpec): Promise<CreateResult> {
+  const prev = createChains.get(spec.repoRoot) ?? Promise.resolve();
+  const next = prev.then(
+    () => runCreateInner(spec),
+    () => runCreateInner(spec),
+  );
+  // Store an error-swallowing tail so one failed create never wedges the chain.
+  createChains.set(spec.repoRoot, next.catch(() => {}));
+  return next;
+}
+
+async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
   // Local sanity first (cheap), then the repo's authoritative validate-branch-name
   // rule when present — so a workspace can never be created on a name that would
   // fail the repo's pre-push hook. Passes through when no validator is configured.
