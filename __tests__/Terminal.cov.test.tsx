@@ -267,7 +267,7 @@ describe("Terminal — alternate-screen raw mode", () => {
     const id = `alt-${spawnSeq}`;
     tauri.invoke({ pty_spawn: () => ({ id, shell: "/bin/bash", is_zsh: false }) });
     const paneId = mkPane();
-    render(<Terminal paneId={paneId} />);
+    render(<Terminal paneId={paneId} isActive={true} />);
     await tick();
     expect(pane(paneId).rawMode).toBe(false);
 
@@ -275,7 +275,7 @@ describe("Terminal — alternate-screen raw mode", () => {
       emitData(id, "\x1b[?1049h" + "vim screen contents");
     });
     expect(pane(paneId).rawMode).toBe(true);
-    // rawMode effect (deps [rawMode]) re-runs → term.focus() called
+    // rawMode effect (deps [rawMode, isActive]) re-runs → active pane focuses xterm
     expect(focusCalls).toBeGreaterThan(0);
 
     const term = openedTerms[openedTerms.length - 1];
@@ -520,7 +520,7 @@ describe("Terminal — resize + settings + rawMode-focus effects", () => {
       const paneId = mkPane();
       // start raw, then flip back to non-raw so the else-branch runs with the
       // element actually present (mount already ran it once with rawMode=false).
-      render(<Terminal paneId={paneId} />);
+      render(<Terminal paneId={paneId} isActive={true} />);
       await tick();
       await act(async () => {
         emitData(id, "\x1b[?1049h");
@@ -534,6 +534,20 @@ describe("Terminal — resize + settings + rawMode-focus effects", () => {
     } finally {
       root.remove();
     }
+  });
+
+  it("a background (inactive) pane entering raw mode does NOT steal focus", async () => {
+    const id = `inactive-${spawnSeq}`;
+    tauri.invoke({ pty_spawn: () => ({ id, shell: "/bin/bash", is_zsh: false }) });
+    const paneId = mkPane();
+    render(<Terminal paneId={paneId} isActive={false} />);
+    await tick();
+    focusCalls = 0;
+    await act(async () => {
+      emitData(id, "\x1b[?1049h" + "vim");
+    });
+    expect(pane(paneId).rawMode).toBe(true); // still enters raw…
+    expect(focusCalls).toBe(0); // …but must not grab keyboard focus
   });
 });
 

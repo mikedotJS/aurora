@@ -18,6 +18,7 @@ import {
   activePane,
   activeGroup,
   activeWorkspace,
+  workspaceOfPane,
   DEFAULT_SETTINGS,
   type Settings,
   type RepoScripts,
@@ -155,18 +156,27 @@ export default function App() {
     gitBranch(apCwd).then((b) => useStore.getState().setBranch(apId, b));
     // Identify the canonical (main) repo for this cwd so per-repo scripts/config
     // are shared across the repo's worktrees (a worktree's toplevel differs).
+    // `cancelled` drops a late resolution once the active pane/cwd has moved on,
+    // so a slow gitRepoInfo can't bind the wrong repo into whichever lane is now
+    // active.
+    let cancelled = false;
     gitRepoInfo(apCwd).then((info) => {
+      if (cancelled) return;
       const root = info?.main_root ?? null;
       useStore.getState().setRepoRoot(apId, root);
       maybeFireHook(apId);
       // A manual lane (booted outside a repo) adopts the repo its pane is in, so
-      // create / settings / rail grouping work once you cd into one.
+      // create / settings / rail grouping work once you cd into one. Adopt the
+      // workspace that OWNS this pane, not whatever is active at resolution time.
       if (info) {
         const st = useStore.getState();
-        const ws = st.workspaces.find((w) => w.id === st.activeWs);
+        const ws = workspaceOfPane(st, apId);
         if (ws && !ws.repoId) st.adoptRepo(ws.id, { root: info.main_root, name: info.name, defaultBranch: info.default_branch });
       }
     });
+    return () => {
+      cancelled = true;
+    };
   }, [apId, apCwd]);
 
   // refresh the active workspace's diff summary (rail counts + status bar)

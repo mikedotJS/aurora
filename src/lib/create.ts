@@ -24,7 +24,11 @@ function allocOffset(repoRoot: string, presetOffset: "auto" | number | undefined
   for (const w of useStore.getState().workspaces) {
     if (w.repoId !== repoRoot) continue;
     const n = parseInt(w.env?.AURORA_PORT_OFFSET ?? "", 10);
-    if (!Number.isNaN(n)) used.add(n);
+    // A same-repo lane with no explicit offset (the main checkout, or any lane
+    // not created through runCreate) runs at the effective offset 0 — the shell
+    // expands the unset $AURORA_PORT_OFFSET to 0 — so reserve slot 0 for it,
+    // else the first auto workspace collides with the main checkout's ports.
+    used.add(Number.isNaN(n) ? 0 : n);
   }
   let off = 0;
   while (used.has(off)) off += PORT_STEP;
@@ -264,6 +268,12 @@ async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
     }
   }
 
+  // Resolve the install command BEFORE createWorkspace so no await sits between
+  // createWorkspace (which makes the new workspace active) and the runScript
+  // call below — otherwise the active workspace could change during the await
+  // and a split on-open script would fan out into the wrong workspace's panes.
+  const install = await installCommand(spec.repoRoot);
+
   let wsId: string;
   try {
     wsId = useStore.getState().createWorkspace({
@@ -287,8 +297,8 @@ async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
   }
 
   // Install dependencies into the fresh worktree (it has no node_modules), then
-  // run the on-open script once the new workspace's panes exist.
-  const install = await installCommand(spec.repoRoot);
+  // run the on-open script once the new workspace's panes exist. `install` was
+  // resolved above (before createWorkspace) so this stretch has no await.
   const st = useStore.getState();
   const w = st.workspaces.find((x) => x.id === wsId);
   const g = w?.tabs[w.active];

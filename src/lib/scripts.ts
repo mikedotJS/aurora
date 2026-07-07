@@ -90,8 +90,15 @@ function taskCmd(root: string, t: ScriptTask): string {
 // dependency install before starting their servers on a fresh worktree. The
 // ready-flag lives in TMPDIR, keyed by the worktree path so concurrent creates
 // for different workspaces never collide on it.
+// Monotonic per-call nonce so each create attempt gets a distinct ready-flag.
+// Keying the flag on execBase alone (the worktree path) let a lingering flag
+// from a prior create at the same path (delete+recreate reuses the branch dir)
+// be observed by a new create's sibling panes, skipping the install wait.
+let gateSeq = 0;
+
 function depsReadyGate(execBase: string, prelude: string) {
-  const token = execBase.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "ws";
+  const base = execBase.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "ws";
+  const token = `${base}-${gateSeq++}`;
   const flag = `"\${TMPDIR:-/tmp}/.aurora-deps-${token}"`;
   return {
     // Pane 0: clear any stale flag, install, flag ready, then run its task.
