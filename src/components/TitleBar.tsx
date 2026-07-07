@@ -28,6 +28,16 @@ export function TitleBar() {
   return (
     <div
       data-tauri-drag-region
+      onDoubleClick={async (e) => {
+        // macOS's native drag-region double-click-maximize is unreliable
+        // (wry#622), so drive it ourselves. Only fire when the double-click
+        // landed on a drag-region surface (the bar background / title text) —
+        // interactive leaves (traffic lights, Home, status, gear, switcher)
+        // are untagged, so double-clicking them no-ops here.
+        if ((e.target as HTMLElement).hasAttribute("data-tauri-drag-region")) {
+          await appWindow.toggleMaximize();
+        }
+      }}
       style={{
         height: 42,
         flex: "0 0 42px",
@@ -39,7 +49,7 @@ export function TitleBar() {
         borderBottom: "1px solid var(--line)",
       }}
     >
-      <div style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
+      <div data-tauri-drag-region style={{ display: "flex", gap: 8, alignItems: "center", minWidth: 0 }}>
         <span
           onClick={() => appWindow.close()}
           title="close"
@@ -89,6 +99,7 @@ export function TitleBar() {
       </div>
 
       <div
+        data-tauri-drag-region
         style={{
           fontFamily: "var(--sans)",
           fontSize: 12.5,
@@ -105,9 +116,10 @@ export function TitleBar() {
           <WorkspaceSwitcher />
         ) : (
           <>
-            <span>aurora</span>
-            <span style={{ color: "var(--faint)" }}>—</span>
+            <span data-tauri-drag-region>aurora</span>
+            <span data-tauri-drag-region style={{ color: "var(--faint)" }}>—</span>
             <span
+              data-tauri-drag-region
               title={branch ?? undefined}
               style={{
                 color: branch ? "var(--acd)" : undefined,
@@ -124,6 +136,7 @@ export function TitleBar() {
       </div>
 
       <div
+        data-tauri-drag-region
         style={{
           display: "flex",
           justifyContent: "flex-end",
