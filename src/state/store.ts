@@ -50,6 +50,9 @@ export interface Settings {
   /** One-time onboarding state (the "Introducing Workspaces" dialog) — persisted
    *  with settings so it rides the existing boot pipeline, not a user-facing preference. */
   introSeen: boolean;
+  /** One-time coach-marks tutorial (WorkspaceTour), shown right after the intro
+   *  is dismissed. Same persistence idiom as `introSeen`. */
+  tutorialSeen: boolean;
 }
 
 export const MODEL_OPTIONS = [
@@ -66,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
   notifyMr: true,
   autoRenameTabs: true,
   introSeen: false,
+  tutorialSeen: false,
 };
 
 export interface Block {
@@ -273,6 +277,10 @@ export interface StoreState {
    *  workspaces" (the empty state is a legitimate, settled outcome). */
   initialized: boolean;
   railCollapsed: boolean;
+  /** Current step index of the WorkspaceTour coach-marks, shared between the
+   *  overlay component and the keyboard layer (lib/keymap.ts) so both can drive
+   *  navigation without coupling directly to each other. */
+  tourStep: number;
   wsFilter: string;
   /** ⌘K command palette (switch + create). Null when closed. */
   command: { query: string; sel: number; repoId?: string | null } | null;
@@ -417,6 +425,17 @@ export interface StoreState {
   /** Dismiss the one-time "Introducing Workspaces" dialog: persists introSeen = true
    *  so it never shows again. */
   dismissIntro: () => void;
+  /** Advance the WorkspaceTour by one step. Every step's target is always
+   *  present (see TourStage.tsx), so this is a plain increment — the
+   *  component finishes the tour explicitly if this ever pushes the step
+   *  past the last one (see WorkspaceTour.tsx). */
+  tourNext: () => void;
+  /** Step the WorkspaceTour back by one, clamped at 0. */
+  tourPrev: () => void;
+  /** Close the WorkspaceTour: persists tutorialSeen = true so it never shows
+   *  again, and resets the step index. Called from both "Skip" and
+   *  "Next" on the last step. */
+  finishTutorial: () => void;
   openPanel: (p: Exclude<PanelKind, null>) => void;
   closePanel: () => void;
   // scripts + hooks
@@ -667,6 +686,7 @@ export const useStore = create<StoreState>((set, get) => ({
   activeWs: null,
   initialized: false,
   railCollapsed: false,
+  tourStep: 0,
   wsFilter: "",
   command: null,
   home: "~",
@@ -1418,6 +1438,12 @@ export const useStore = create<StoreState>((set, get) => ({
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
   dismissIntro: () => get().setSetting("introSeen", true),
+  tourNext: () => set((s) => ({ tourStep: s.tourStep + 1 })),
+  tourPrev: () => set((s) => ({ tourStep: Math.max(0, s.tourStep - 1) })),
+  finishTutorial: () => {
+    get().setSetting("tutorialSeen", true);
+    set({ tourStep: 0 });
+  },
   openPanel: (p) => set((s) => ({ panel: s.panel === p ? null : p })),
   closePanel: () => set({ panel: null }),
 

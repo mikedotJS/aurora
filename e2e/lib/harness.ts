@@ -63,6 +63,12 @@ export interface SeedOptions {
   workspaces?: { workspaces: unknown[]; activeWs: string | null };
   /** settings.introSeen — defaults to true so the intro dialog stays out of the way. */
   introSeen?: boolean;
+  /** settings.tutorialSeen — defaults to true so the WorkspaceTour coach-marks
+   *  stay out of the way (it mounts whenever introSeen && !tutorialSeen — see
+   *  App.tsx — and its keyboard guard swallows everything but Esc/←/→/Space,
+   *  which breaks every dispatchKey()-driven spec that isn't testing the tour
+   *  itself). A spec exercising the tour sets this to `false` explicitly. */
+  tutorialSeen?: boolean;
   /** Raw extra keys (e.g. "aurora.repoconfig"). */
   extra?: Record<string, unknown>;
 }
@@ -70,9 +76,9 @@ export interface SeedOptions {
 /** Wipe app localStorage, seed the given state, and reload the frontend. */
 export async function seedAppState(opts: SeedOptions = {}): Promise<void> {
   await browser.execute(
-    (repos, workspaces, introSeen, extra) => {
+    (repos, workspaces, introSeen, tutorialSeen, extra) => {
       localStorage.clear();
-      localStorage.setItem("aurora.settings", JSON.stringify({ introSeen }));
+      localStorage.setItem("aurora.settings", JSON.stringify({ introSeen, tutorialSeen }));
       if (repos) localStorage.setItem("aurora.repos", JSON.stringify(repos));
       if (workspaces) localStorage.setItem("aurora.workspaces", JSON.stringify(workspaces));
       for (const [k, v] of Object.entries(extra ?? {})) {
@@ -82,6 +88,7 @@ export async function seedAppState(opts: SeedOptions = {}): Promise<void> {
     opts.repos ?? null,
     opts.workspaces ?? null,
     opts.introSeen ?? true,
+    opts.tutorialSeen ?? true,
     opts.extra ?? {},
   );
   await reloadFrontend();

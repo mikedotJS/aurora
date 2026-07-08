@@ -15,6 +15,9 @@ dist-ssr
 # Test coverage output (bun --coverage / test/cov.ts)
 coverage
 
+# e2e run artifacts (screenshots / logs from the WebdriverIO harness)
+e2e/artifacts/
+
 # Local env (dev secrets — e.g. ANTHROPIC_API_KEY for `tauri dev`). Never commit.
 .env
 .env.*

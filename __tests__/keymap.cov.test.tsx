@@ -83,11 +83,12 @@ beforeEach(() => {
     serverStatus: {},
     notifs: [],
     notifLog: [],
-    // The one-time intro dialog guard (top of handleKeyDown) swallows every key
-    // while unseen; these suites cover pre-existing keymap behavior, not the
-    // intro itself, so seed it dismissed. (Intro-specific keymap coverage is a
-    // separate, dedicated describe block.)
-    settings: { ...DEFAULT_SETTINGS, introSeen: true },
+    // The one-time intro dialog guard AND the WorkspaceTour coach-marks guard
+    // (both top of handleKeyDown) swallow every key while active; these suites
+    // cover pre-existing keymap behavior, not either guard, so seed both
+    // dismissed/seen. (Intro- and tutorial-specific keymap coverage each have
+    // their own dedicated describe block below.)
+    settings: { ...DEFAULT_SETTINGS, introSeen: true, tutorialSeen: true },
   });
 });
 
@@ -1623,9 +1624,101 @@ describe("handleKeyDown — 'Introducing Workspaces' intro guard (settings.intro
 
   it("once introSeen is true, the guard is inert: Escape falls through to normal handling (closes the open command palette) instead of re-dismissing", () => {
     useStore.getState().openCommand();
-    useStore.setState({ settings: { ...DEFAULT_SETTINGS, introSeen: true } });
+    // tutorialSeen: true too — otherwise this trips the WorkspaceTour guard
+    // instead (introSeen: true && tutorialSeen: false), which would also eat
+    // Escape but for a different reason (finishTutorial, not falling through).
+    useStore.setState({ settings: { ...DEFAULT_SETTINGS, introSeen: true, tutorialSeen: true } });
     expect(useStore.getState().command).not.toBeNull();
     handleKeyDown(keyEvt("Escape"));
     expect(useStore.getState().command).toBeNull();
+  });
+});
+
+// ── WorkspaceTour coach-marks — keyboard-modal guard ────────────────────────
+// (introSeen: true && tutorialSeen: false). Same idiom as the intro guard
+// above: while active, only Escape/→/Space/← act and everything else is
+// swallowed so it can never reach the pane/xterm behind the overlay.
+
+describe("handleKeyDown — WorkspaceTour guard (introSeen: true, tutorialSeen: false)", () => {
+  beforeEach(() => {
+    useStore.setState({
+      settings: { ...DEFAULT_SETTINGS, introSeen: true, tutorialSeen: false },
+      tourStep: 0,
+    });
+  });
+
+  it("ArrowRight advances the tour (tourNext) and calls preventDefault", () => {
+    const evt = keyEvt("ArrowRight");
+    handleKeyDown(evt);
+    expect(useStore.getState().tourStep).toBe(1);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("Space advances the tour (tourNext), same as ArrowRight", () => {
+    handleKeyDown(keyEvt(" "));
+    expect(useStore.getState().tourStep).toBe(1);
+  });
+
+  it("ArrowLeft steps the tour back (tourPrev), clamped at 0", () => {
+    useStore.setState({ tourStep: 2 });
+    handleKeyDown(keyEvt("ArrowLeft"));
+    expect(useStore.getState().tourStep).toBe(1);
+
+    handleKeyDown(keyEvt("ArrowLeft"));
+    expect(useStore.getState().tourStep).toBe(0);
+    handleKeyDown(keyEvt("ArrowLeft"));
+    expect(useStore.getState().tourStep).toBe(0); // clamped, does not go negative
+  });
+
+  it("Escape finishes the tutorial (tutorialSeen -> true) and resets tourStep, even with no active pane", () => {
+    useStore.setState({ activeWs: null, tourStep: 3 });
+    const evt = keyEvt("Escape");
+    handleKeyDown(evt);
+    expect(useStore.getState().settings.tutorialSeen).toBe(true);
+    expect(useStore.getState().tourStep).toBe(0);
+    expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+  });
+
+  it("Escape finishing the tutorial persists tutorialSeen:true to aurora.settings in localStorage", () => {
+    handleKeyDown(keyEvt("Escape"));
+    const raw = localStorage.getItem("aurora.settings");
+    expect(raw).not.toBeNull();
+    expect(JSON.parse(raw!).tutorialSeen).toBe(true);
+  });
+
+  it("swallows ⌘K: the command palette does not open while the tour is active", () => {
+    useStore.setState({ command: null });
+    handleKeyDown(keyEvt("k", { metaKey: true }));
+    expect(useStore.getState().command).toBeNull();
+    expect(useStore.getState().tourStep).toBe(0); // and did not advance either
+  });
+
+  it("swallows ⌘,: settings does not open while the tour is active", () => {
+    useStore.setState({ settingsOpen: false });
+    handleKeyDown(keyEvt(",", { metaKey: true }));
+    expect(useStore.getState().settingsOpen).toBe(false);
+  });
+
+  it("swallows ⌘B: the workspace rail does not toggle while the tour is active", () => {
+    useStore.setState({ railCollapsed: false });
+    handleKeyDown(keyEvt("b", { metaKey: true }));
+    expect(useStore.getState().railCollapsed).toBe(false);
+  });
+
+  it("swallows a plain letter key so it never reaches the xterm behind the overlay", () => {
+    const id = mkPane();
+    useStore.setState({ activeWs: useStore.getState().activeWs }); // keep pane current
+    withPty(id);
+    useStore.getState().setInput(id, "");
+    handleKeyDown(keyEvt("x", { target: { tagName: "TEXTAREA" } }));
+    expect(pane(id).input).toBe(""); // never reached the normal key-entry path
+    expect(useStore.getState().tourStep).toBe(0);
+  });
+
+  it("once tutorialSeen is true, the guard is inert: ArrowRight falls through to normal handling instead of advancing tourStep", () => {
+    useStore.setState({ settings: { ...DEFAULT_SETTINGS, introSeen: true, tutorialSeen: true } });
+    useStore.setState({ activeWs: null });
+    handleKeyDown(keyEvt("ArrowRight"));
+    expect(useStore.getState().tourStep).toBe(0); // unchanged — guard did not fire
   });
 });

@@ -46,7 +46,10 @@ beforeEach(() => {
     keyError: null,
     apiKeyPresent: false,
     railCollapsed: false,
-    settings: { ...DEFAULT_SETTINGS, introSeen: true },
+    // introSeen AND tutorialSeen: true — otherwise the WorkspaceTour coach-marks
+    // keyboard guard in handleKeyDown (introSeen: true && tutorialSeen: false)
+    // swallows every key this suite exercises.
+    settings: { ...DEFAULT_SETTINGS, introSeen: true, tutorialSeen: true },
   });
 });
 

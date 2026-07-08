@@ -13,6 +13,7 @@ import { WorkspaceRail, WorkspaceContextBar } from "./components/WorkspaceRail";
 import { WorkspaceCommand } from "./components/WorkspaceCommand";
 import { WorkspaceSettings } from "./components/WorkspaceSettings";
 import { WorkspacesIntro } from "./components/WorkspacesIntro";
+import { WorkspaceTour } from "./components/WorkspaceTour";
 import {
   useStore,
   activePane,
@@ -44,6 +45,7 @@ export default function App() {
   const scriptsSetupOpen = useStore((s) => s.scriptsSetupOpen);
   const commandOpen = useStore((s) => s.command !== null);
   const introSeen = useStore((s) => s.settings.introSeen);
+  const tutorialSeen = useStore((s) => s.settings.tutorialSeen);
   const panel = useStore((s) => s.panel);
   const railCollapsed = useStore((s) => s.railCollapsed);
   const apId = useStore((s) => activePane(s)?.id);
@@ -292,6 +294,7 @@ export default function App() {
       {workspaceSettingsOpen && <WorkspaceSettings />}
       {commandOpen && <WorkspaceCommand />}
       {!introSeen && <WorkspacesIntro />}
+      {introSeen && !tutorialSeen && <WorkspaceTour />}
     </div>
   );
 }

@@ -519,3 +519,251 @@ select {
     animation: none;
   }
 }
+
+/* WorkspaceTour — the post-intro coach-marks overlay (components/WorkspaceTour.tsx).
+   Sits above every other overlay including the intro dialog's own 100, since the
+   two are mutually exclusive in time but the tour's z-index still needs to clear
+   it structurally. Layout (top/left/width/height of the spotlight + bubble) is
+   resolved in JS via getBoundingClientRect — these classes only own paint. */
+.aurora-tour-root {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  pointer-events: none;
+}
+/* Invisible click-catcher: keeps a stray click from reaching the pane behind
+   the tour, mirroring the intro's inert backdrop. The dim scrim itself comes
+   from the spotlight's box-shadow below, not from this layer, so the two
+   don't double-darken. */
+.aurora-tour-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+}
+/* The "hole": a transparent box at the target's rect, ringed in accent, whose
+   giant box-shadow dims the rest of the viewport in one paint — no clip-path
+   or mask needed, which keeps this robust inside WKWebView. Two accent rings
+   instead of one: a crisp hairline traces the target exactly, a second,
+   fainter ring sits a few px further out — the same "traced twice" idiom a
+   focus ring gets, so the cutout reads as deliberately instrumented rather
+   than a flat outline. The ambient glow underneath is wide and soft so the
+   ring reads as light falling on the target, not a sticker on top of it. */
+.aurora-tour-spotlight {
+  position: absolute;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 9999px color-mix(in oklab, black 62%, transparent),
+    0 0 0 1px color-mix(in oklab, var(--ac) 88%, transparent),
+    0 0 0 5px color-mix(in oklab, var(--ac) 13%, transparent),
+    0 0 30px 3px color-mix(in oklab, var(--ac) 30%, transparent);
+  /* MOTION — the tour's one signature moment: the spotlight glides from one
+     target to the next instead of snapping. top/left/width/height are the
+     only levers available (the box-shadow "hole" trick needs real box
+     dimensions; a transform-only version would need a wrapper plus computed
+     scale/translate — not worth it for a rect that moves a handful of times
+     a session, never on a scroll/raf loop). Tokens borrowed verbatim from
+     tokens.css, not invented: --ease-scan is the app's inOut "sweep" curve —
+     the right physical read for an A→B move that neither appears from
+     nothing nor exits to nothing (--ease-out-soft, used below on the
+     bubble, is for arrivals only). --dur-ui is the "panel settle" bucket;
+     a hover doesn't need it, a cross-viewport highlight move does. This
+     transitions on the SAME node across steps (no `key` here, unlike the
+     bubble below) — that's what makes the glide possible at all. */
+  transition:
+    top var(--dur-ui) var(--ease-scan),
+    left var(--dur-ui) var(--ease-scan),
+    width var(--dur-ui) var(--ease-scan),
+    height var(--dur-ui) var(--ease-scan);
+}
+.aurora-tour-bubble {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  pointer-events: auto;
+  background: var(--win);
+  border: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-radius: 12px;
+  box-shadow: 0 20px 52px -22px rgba(0, 0, 0, 0.85);
+  /* MOTION — fade + rise/scale on entrance: the app's shared popIn keyframe
+     (tokens.css) on --ease-out-soft, the same idiom the ⌘K palette's own
+     popIn uses, so this doesn't introduce a fourth easing to the app.
+     Replays on every step change (see the `key={tourStep}` on this element
+     in WorkspaceTour.tsx) — the bubble re-materializing is the cue that it
+     moved, cheaper and clearer than giving it its own top/left transition. */
+  animation: popIn var(--dur-micro) var(--ease-out-soft);
+}
+/* Becquet: a rotated square with border on the two edges that face the
+   target, background-matched to the bubble so it reads as a torn-off corner
+   of the same surface rather than a separate shape. Its horizontal position
+   (`left`, set inline) is the target's center clamped to the bubble's own
+   width, so it keeps pointing roughly at the spotlight even when the bubble
+   itself had to clamp away from the viewport edge. Sits *behind* the bubble's
+   content stacking-wise but never overlaps it since it lives outside the
+   padding box. */
+.aurora-tour-arrow {
+  position: absolute;
+  top: -7px;
+  width: 14px;
+  height: 14px;
+  background: var(--win);
+  border-left: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-top: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-radius: 3px 0 0 0;
+  transform: translateX(-50%) rotate(45deg);
+  pointer-events: none;
+}
+/* Flipped when the bubble sits above the target instead of below it: the
+   becquet moves to the bottom edge and its border switches to the opposite
+   corner so it still faces the spotlight. */
+.aurora-tour-bubble--above .aurora-tour-arrow {
+  top: auto;
+  bottom: -7px;
+  border-left: none;
+  border-top: none;
+  border-right: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-bottom: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-radius: 0 0 3px 0;
+}
+/* Sideways placements: the becquet moves off the top/bottom edge entirely
+   and onto the left or right one, rotated onto the vertical axis instead —
+   its position along that edge (`top`, set inline) is the target's vertical
+   center clamped to the bubble's own height, the same derivation the
+   above/below variants use on `left`. Used for edge-hugging, tall targets
+   (the rail) where there's no room above or below without covering it. */
+.aurora-tour-bubble--left .aurora-tour-arrow {
+  /* Bubble sits to the LEFT of the target: becquet pokes out of the
+     bubble's RIGHT edge, pointing right at the target. */
+  top: 0;
+  left: auto;
+  right: -7px;
+  border-left: none;
+  border-bottom: none;
+  border-top: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-right: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-radius: 0 3px 0 0;
+  transform: translateY(-50%) rotate(45deg);
+}
+.aurora-tour-bubble--right .aurora-tour-arrow {
+  /* Bubble sits to the RIGHT of the target: becquet pokes out of the
+     bubble's LEFT edge, pointing left at the target — this is the rail's
+     step, the tour's most common case. */
+  top: 0;
+  left: -7px;
+  border-top: none;
+  border-right: none;
+  border-left: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-bottom: 1px solid color-mix(in oklab, var(--ac) 22%, var(--line));
+  border-radius: 0 0 0 3px;
+  transform: translateY(-50%) rotate(45deg);
+}
+.aurora-tour-step-counter {
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--acd);
+}
+.aurora-tour-text {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+.aurora-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.aurora-tour-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.aurora-tour-btn {
+  padding: 6px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  cursor: pointer;
+  /* MOTION — same --ease-out-soft/--dur-micro pairing as every other hover
+     surface in the app (.aurora-empty-primary above). box-shadow rides
+     along so the primary variant's bloom (below) glides in on hover
+     instead of snapping (a gap the previous color/background/border-only
+     list left); transform rides along for the :active press below. */
+  transition:
+    color var(--dur-micro) var(--ease-out-soft),
+    background-color var(--dur-micro) var(--ease-out-soft),
+    border-color var(--dur-micro) var(--ease-out-soft),
+    box-shadow var(--dur-micro) var(--ease-out-soft),
+    transform var(--dur-micro) var(--ease-out-soft);
+}
+.aurora-tour-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--fg) 25%, var(--line));
+}
+/* Press feedback: a small settle, not a bounce — registers the click
+   without competing with the hover/focus states. Applies to all three
+   variants (ghost/default/primary) since they all extend this base class. */
+.aurora-tour-btn:active {
+  transform: scale(0.97);
+}
+.aurora-tour-btn--ghost {
+  border-color: transparent;
+  color: var(--faint);
+}
+.aurora-tour-btn--ghost:hover {
+  color: var(--dim);
+  border-color: transparent;
+  background: color-mix(in oklab, var(--faint) 10%, transparent);
+}
+/* Rides the same "accent-tinted, soft bloom" primary-CTA idiom as
+   .aurora-empty-primary (see its comment above) so the tour's one primary
+   action reads as the same kind of thing as the rest of the app's primary
+   actions, just sized for an inline button instead of a full-width one. */
+.aurora-tour-btn--primary {
+  border-color: color-mix(in oklab, var(--acd) 55%, var(--line));
+  background: color-mix(in oklab, var(--ac) 12%, transparent);
+  color: var(--ac);
+  box-shadow: 0 0 20px -14px var(--ac);
+}
+.aurora-tour-btn--primary:hover {
+  background: color-mix(in oklab, var(--ac) 19%, transparent);
+  border-color: color-mix(in oklab, var(--ac) 60%, var(--line));
+  box-shadow: 0 0 24px -12px var(--ac);
+}
+.aurora-tour-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ac) 42%, transparent);
+}
+/* Higher in the cascade than the generic rule above (same specificity, later
+   source order) so the primary button keeps its bloom alongside the focus
+   ring instead of losing it, matching .aurora-empty-primary's own
+   focus-visible treatment. */
+.aurora-tour-btn--primary:focus-visible {
+  box-shadow:
+    0 0 0 2px color-mix(in oklab, var(--ac) 42%, transparent),
+    0 0 24px -12px var(--ac);
+}
+@media (prefers-reduced-motion: reduce) {
+  .aurora-tour-spotlight {
+    transition: none;
+  }
+  .aurora-tour-bubble {
+    animation: none;
+  }
+  /* Kills the hover/press glide too, including the :active press-scale
+     above — the state change still happens (color/bloom/scale still
+     apply), it just snaps instead of easing, matching the rest of the
+     app's reduced-motion posture (no animation ever fully removes a state
+     change, only its interpolation). */
+  .aurora-tour-btn {
+    transition: none;
+  }
+}

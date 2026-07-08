@@ -14,9 +14,11 @@ import { tauri } from "../test/mocks/tauri";
 function resetAll() {
   localStorage.clear();
   // The "Introducing Workspaces" dialog mounts on boot while settings.introSeen
-  // is false. These App boot tests exercise the normal running state, so mark it
-  // as already seen (a test needing the intro would set introSeen:false itself).
-  localStorage.setItem("aurora.settings", JSON.stringify({ introSeen: true }));
+  // is false, and the WorkspaceTour coach-marks mount right after while
+  // tutorialSeen is false. These App boot tests exercise the normal running
+  // state, so mark both as already seen (a test needing either overlay sets
+  // the relevant flag to false itself).
+  localStorage.setItem("aurora.settings", JSON.stringify({ introSeen: true, tutorialSeen: true }));
   window.innerWidth = 1200; // wide by default — narrow-breakpoint tests set this explicitly
   useStore.setState(
     {

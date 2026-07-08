@@ -333,6 +333,26 @@ export function handleKeyDown(e: KeyboardEvent) {
     return;
   }
 
+  // The WorkspaceTour coach-marks overlay (shown once, right after the intro
+  // above is dismissed) is a keyboard-modal too, same idiom as the intro
+  // guard: while it's active (introSeen && !tutorialSeen), only Esc/→/Space/←
+  // act, and everything else is swallowed so it can't reach the pane behind
+  // it. `tourStep` itself lives in the store so this and WorkspaceTour.tsx
+  // drive the same state without coupling to each other.
+  if (s.settings.introSeen && !s.settings.tutorialSeen) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      s.finishTutorial();
+    } else if (e.key === "ArrowRight" || e.key === " ") {
+      e.preventDefault();
+      s.tourNext();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      s.tourPrev();
+    }
+    return;
+  }
+
   const tag = (e.target as HTMLElement | null)?.tagName ?? "";
   if (/^(INPUT|SELECT|TEXTAREA)$/.test(tag)) return; // form fields / xterm own these
 
