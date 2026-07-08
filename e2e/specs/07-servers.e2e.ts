@@ -181,6 +181,31 @@ describe("Run servers", () => {
     await waitForPort(port, true, 10_000);
   });
 
+  // KEYS: ⌘R (keyboard-shortcuts-2) drives the exact same lib/servers.ts
+  // runServers/stopServers path as the "Run"/"Stop" button clicked in SERVERS-1/8
+  // above (WorkspaceContextBar's button and keymap.ts's ⌘R handler both call
+  // serversUp/runServers/stopServers directly — see keymap.ts:439-456) — only the
+  // trigger differs (keydown vs click). Written but NOT executed in this session:
+  // SERVERS-1/8 right above are it.skip'd for a confirmed, reproducible failure
+  // (H-11bis — the embedded driver unreliably delivers a click-driven Tauri round
+  // trip through to a real process spawn in this sandbox); this keyboard-driven
+  // variant reaches the identical spawn path and would very likely hit the same
+  // failure mode, but that has not been separately confirmed here — do not treat
+  // this comment as a skip justification, just an honest expectation from
+  // adjacent evidence. Un-skip and run once H-11bis is resolved.
+  it.skip("KEYS-1: ⌘R starts the script (Run -> Stop label) and a second ⌘R stops it (Stop -> Run)", async () => {
+    expect(portOpen(port)).toBe(false);
+    await waitForText("Run", 8_000);
+
+    await dispatchMetaKey("r");
+    await waitForText("Stop", 8_000);
+    await waitForPort(port, true, 10_000);
+
+    await dispatchMetaKey("r");
+    await waitForText("Run", 8_000);
+    await waitForPort(port, false, 10_000);
+  });
+
   // Batch 4: skipped alongside SERVERS-1 — see H-11bis note above (same
   // failure signature: port never opens after "Run").
   it.skip("SERVERS-8: Stop kills the server pane and frees the port", async () => {

@@ -296,4 +296,41 @@ describe("Switch / Rail flow", () => {
     // Restore the rail for hygiene (not strictly required — each test reseeds).
     await dispatchMetaKey("b");
   });
+
+  it("SWITCH-16: ⌘K opens the palette; ⌘↓ cycles the creation-target repo chip to the other repo", async () => {
+    // Second fixture repo registered but with no workspace of its own — just
+    // enough for the palette's chip to have >1 target to cycle between
+    // (WorkspaceCommand.tsx's ⌘↑/⌘↓ handler, gated on repos.length > 1).
+    const repo2 = makeRepoWithWorktrees("switch-2", ["feat/delta"]);
+    try {
+      const [dirA] = repo.worktreeDirs;
+      const wsA = persistedWs("wsA", repo.root, dirA, "feat/alpha");
+      await seedAppState({
+        repos: [
+          { id: repo.root, root: repo.root, name: repo.name, defaultBranch: "main" },
+          { id: repo2.root, root: repo2.root, name: repo2.name, defaultBranch: "main" },
+        ],
+        workspaces: { workspaces: [wsA], activeWs: "wsA" },
+      });
+      await waitForText("feat/alpha");
+
+      await dispatchMetaKey("k");
+      const paletteInput = 'div[aria-label="Workspace command"] input';
+      await $(paletteInput).waitForExist({ timeout: 5_000 });
+      // Hint footer only renders when repos.length > 1 — confirms the chip is cycleable.
+      await waitForText("target repo");
+      // Base target resolves to the active workspace's repo (repo.name, "switch") —
+      // the chip should show it before any cycling.
+      await waitForText(repo.name);
+
+      await dispatchKeyOn(paletteInput, "ArrowDown", { meta: true });
+      await waitForText(repo2.name);
+
+      // ⌘↑ from there wraps back to the first repo.
+      await dispatchKeyOn(paletteInput, "ArrowUp", { meta: true });
+      await waitForText(repo.name);
+    } finally {
+      repo2.cleanup();
+    }
+  });
 });

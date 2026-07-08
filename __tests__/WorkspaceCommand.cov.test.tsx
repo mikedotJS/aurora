@@ -751,3 +751,79 @@ describe("keyboard Tab per item kind", () => {
     expect(document.body.textContent).toContain("PROJ-7");
   });
 });
+
+// ── ⌘↑ / ⌘↓ target-repo cycling (keyboard-shortcuts-2) ──────────────────────
+
+describe("⌘↑ / ⌘↓ target-repo cycling", () => {
+  it("no-ops (no setCommandRepo call) when there's only one repo", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    useStore.setState({ repos: [repoA], command: { query: "", sel: 1 } });
+    render(<WorkspaceCommand />);
+    expect(screen.queryByText("⌘↑↓")).toBeNull(); // hint footer gated repos.length>1
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "ArrowDown", metaKey: true });
+    expect(useStore.getState().command?.repoId).toBeUndefined();
+  });
+
+  it("⌘↓ cycles forward with wraparound; ⌘↑ cycles backward with wraparound", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    const repoB = makeRepo("/repos/b", { name: "Beta" });
+    const repoC = makeRepo("/repos/c", { name: "Gamma" });
+    useStore.setState({ repos: [repoA, repoB, repoC], command: { query: "", sel: 0 } });
+    render(<WorkspaceCommand />);
+    expect(screen.getByText("⌘↑↓")).toBeTruthy();
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+
+    // base is repos[0] (Alpha — no active ws, no explicit pin) → ⌘↓ → Beta
+    fireEvent.keyDown(input, { key: "ArrowDown", metaKey: true });
+    expect(useStore.getState().command?.repoId).toBe(repoB.id);
+
+    fireEvent.keyDown(input, { key: "ArrowDown", metaKey: true });
+    expect(useStore.getState().command?.repoId).toBe(repoC.id);
+
+    // from the last repo, ⌘↓ wraps to the first
+    fireEvent.keyDown(input, { key: "ArrowDown", metaKey: true });
+    expect(useStore.getState().command?.repoId).toBe(repoA.id);
+
+    // from the first repo, ⌘↑ wraps to the last
+    fireEvent.keyDown(input, { key: "ArrowUp", metaKey: true });
+    expect(useStore.getState().command?.repoId).toBe(repoC.id);
+  });
+
+  it("⌘↓ does not fall through to moveCommand — list selection (sel) stays put", () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    const repoB = makeRepo("/repos/b", { name: "Beta" });
+    useStore.setState({ repos: [repoA, repoB], command: { query: "", sel: 2 } });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+    fireEvent.keyDown(input, { key: "ArrowDown", metaKey: true });
+    expect(useStore.getState().command?.sel).toBe(2); // unchanged — moveCommand did NOT run
+    expect(useStore.getState().command?.repoId).toBe(repoB.id); // setCommandRepo DID run
+  });
+
+  it("↵ after picking a repo via ⌘↓ creates the new workspace under that repo", async () => {
+    const repoA = makeRepo("/repos/a", { name: "Alpha" });
+    const repoB = makeRepo("/repos/b", { name: "Beta" });
+    useStore.setState({ repos: [repoA, repoB], command: { query: "", sel: 0 } });
+    tauri.invoke({
+      validate_branch_name: () => ({ ok: true, message: null, enforced: true }),
+      worktree_add: () => ({ path: "/tmp/beta-ws", branch: "my-feature" }),
+    });
+    render(<WorkspaceCommand />);
+    const input = screen.getByPlaceholderText("Switch workspace, or describe / name one to create…");
+
+    fireEvent.keyDown(input, { key: "ArrowDown", metaKey: true }); // target -> Beta
+    expect(useStore.getState().command?.repoId).toBe(repoB.id);
+
+    // setCommandQuery resets sel to 0 (jira row, disabled — not connected) but
+    // preserves the pinned repoId (setCommandQuery only touches query/sel).
+    fireEvent.change(input, { target: { value: "my-feature" } });
+    expect(useStore.getState().command?.repoId).toBe(repoB.id);
+
+    fireEvent.keyDown(input, { key: "ArrowDown" }); // plain arrow: sel 0(jira) -> 1(branch)
+    fireEvent.keyDown(input, { key: "Enter" }); // quickCreate("branch") under the targeted repo
+
+    await waitFor(() => expect(useStore.getState().workspaces.length).toBe(1));
+    expect(useStore.getState().workspaces[0].repoId).toBe(repoB.id);
+  });
+});

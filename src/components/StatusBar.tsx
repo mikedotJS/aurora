@@ -138,6 +138,9 @@ export function StatusBar() {
           <span style={{ color: "var(--acd)" }}>⌘D</span> split
         </span>
         <span>
+          <span style={{ color: "var(--acd)" }}>⌘R</span> run/stop
+        </span>
+        <span>
           <span style={{ color: "var(--acd)" }}>⇥</span> accept
         </span>
         <span>

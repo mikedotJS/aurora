@@ -298,6 +298,20 @@ export function WorkspaceCommand() {
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") return void (e.preventDefault(), closeCommand());
+    // ⌘↓ / ⌘↑ cycle the creation target repo (only meaningful with >1 repo) —
+    // must run before the plain Arrow handlers below, since those don't check
+    // !metaKey and would otherwise steal ⌘↓ for list navigation. Base index is
+    // the current target (explicit chip pick, else the resolved `repo`, mirroring
+    // the useMemo at line 78); not-found (-1) wraps ⌘↓ to repos[0].
+    if (e.metaKey && repos.length > 1 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      const curId = targetRepoId ?? repo?.id ?? null;
+      const idx = repos.findIndex((r) => r.id === curId);
+      const delta = e.key === "ArrowDown" ? 1 : -1;
+      const next = (idx + delta + repos.length) % repos.length;
+      setCommandRepo(repos[next].id);
+      return;
+    }
     if (e.key === "ArrowDown") return void (e.preventDefault(), moveCommand(1, count));
     if (e.key === "ArrowUp") return void (e.preventDefault(), moveCommand(-1, count));
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) return void (e.preventDefault(), openDescribeForm());
@@ -385,6 +399,7 @@ export function WorkspaceCommand() {
                 <span
                   ref={chipRef}
                   onClick={repos.length > 1 ? openRepoMenu : undefined}
+                  title={repos.length > 1 ? "creation target — click, or ⌘↑↓ to cycle" : undefined}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -548,6 +563,9 @@ export function WorkspaceCommand() {
                 </span>{" "}
                 create with AI
               </span>
+              {repos.length > 1 && (
+                <span><span style={{ color: "var(--acd)" }}>⌘↑↓</span> target repo</span>
+              )}
               <span style={{ marginLeft: "auto" }}><span style={{ color: "var(--acd)" }}>↑↓</span> navigate</span>
             </div>
           </>

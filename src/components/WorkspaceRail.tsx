@@ -568,7 +568,7 @@ export function WorkspaceRail() {
                 className="aurora-empty-primary aurora-rail-empty-cta"
                 onClick={onAddRepo}
                 disabled={addBusy}
-                title="add an existing repository folder"
+                title="add an existing repository folder (⌘O)"
                 aria-label="Add repository"
               >
                 <span className="aurora-rail-empty-plus" aria-hidden>
@@ -636,7 +636,7 @@ export function WorkspaceRail() {
             type="button"
             onClick={onAddRepo}
             disabled={addBusy}
-            title="add another repository folder"
+            title="add another repository folder (⌘O)"
             aria-label="Add another repository"
             style={{
               display: "flex",
@@ -842,7 +842,7 @@ export function WorkspaceContextBar() {
               type="button"
               className={`aurora-ws-runtoggle${up ? " aurora-ws-runtoggle--up" : ""}`}
               aria-label={up ? "Stop servers" : "Run servers"}
-              title={`${up ? "Stop" : "Run"} ${units.length} server${units.length !== 1 ? "s" : ""}`}
+              title={`${up ? "Stop" : "Run"} ${units.length} server${units.length !== 1 ? "s" : ""} (⌘R)`}
               style={{ flex: "0 0 auto" }}
               onClick={() => {
                 (up ? stopServers(ws.id) : runServers(ws.id)).catch((e: unknown) => {

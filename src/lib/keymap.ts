@@ -14,6 +14,9 @@ import { shQuote } from "./shellQuote";
 import { ensurePtyPoll, paneRunning } from "./running";
 import { loadDirFrecency, topDirs } from "./dirFrecency";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { addRepoFromFolder } from "./repo";
+import { portScripts } from "./ports";
+import { runServers, stopServers, serversUp, repoLabel } from "./servers";
 
 /** Entries offered per `cd `-prefix popover; also caps the ⌥1..9 direct-accept range. */
 const CD_SUGGEST_LIMIT = 9;
@@ -414,6 +417,41 @@ export function handleKeyDown(e: KeyboardEvent) {
         s.switchWorkspace(home.id);
         focusRoot();
       }
+      return;
+    }
+    // ⌘O — add a repository via the native folder picker (mirrors WorkspaceRail's
+    // onAddRepo, WorkspaceRail.tsx:407-414). That component holds the error in
+    // local `addError` state; there's no such surface here, so a failure notifies
+    // instead.
+    if (k === "o" || k === "O") {
+      e.preventDefault();
+      addRepoFromFolder().then((res) => {
+        if ("ok" in res && !res.ok) {
+          s.notify({ color: "var(--err)", icon: "⚡", headline: "Couldn't add repository", sub: res.error, repo: "" });
+        }
+      });
+      return;
+    }
+    // ⌘R — toggle run/stop for the active workspace's port-scripts (mirrors the
+    // rail's Run/Stop button, WorkspaceRail.tsx:840-857). No-op when there's no
+    // active workspace or no port-script to run. Always preventDefault: ⌘R is
+    // the webview's native reload shortcut and must never fire here.
+    if (k === "r" || k === "R") {
+      e.preventDefault();
+      const ws = activeWorkspace(s);
+      if (!ws) return;
+      const scripts = s.userScripts[ws.repoId ?? ""]?.scripts ?? [];
+      if (portScripts(scripts).length === 0) return;
+      const up = serversUp(ws, s.serverStatus);
+      (up ? stopServers(ws.id) : runServers(ws.id)).catch((e: unknown) => {
+        s.notify({
+          color: "var(--err)",
+          icon: "⚡",
+          headline: `Couldn't ${up ? "stop" : "start"} servers — ${ws.title}`,
+          sub: e instanceof Error ? e.message : String(e),
+          repo: repoLabel(ws.repoId),
+        });
+      });
       return;
     }
   }

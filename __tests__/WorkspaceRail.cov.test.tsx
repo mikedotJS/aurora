@@ -243,8 +243,8 @@ describe("WorkspaceRail — empty & repo groups", () => {
     seed();
     const { container, getAllByLabelText } = render(<WorkspaceRail />);
     // Exactly one Add-repository control while empty: the primary CTA. The footer
-    // control (distinct title="add another repository folder") is not rendered.
-    expect(container.querySelector('[title="add another repository folder"]')).toBeNull();
+    // control (distinct title="add another repository folder (⌘O)") is not rendered.
+    expect(container.querySelector('[title="add another repository folder (⌘O)"]')).toBeNull();
     expect(getAllByLabelText("Add repository")).toHaveLength(1);
   });
 
@@ -713,7 +713,7 @@ describe("WorkspaceRail — add repository (footer)", () => {
   // instead (covered in the "empty & repo groups" suite). So each test here
   // seeds a repo, then targets the footer by its stable `title`.
   const footerAddRepo = (container: HTMLElement) =>
-    container.querySelector('[title="add another repository folder"]') as HTMLElement;
+    container.querySelector('[title="add another repository folder (⌘O)"]') as HTMLElement;
   const seedWithRepo = () => seed({ repos: [REPO] });
 
   it("renders the footer control once a repo exists (and not in the zero-repo state)", () => {
@@ -867,7 +867,7 @@ describe("WorkspaceContextBar", () => {
     const btn = container.querySelector(".aurora-ws-runtoggle") as HTMLButtonElement;
     expect(btn).toBeTruthy();
     expect(btn.getAttribute("aria-label")).toBe("Run servers");
-    expect(btn.getAttribute("title")).toBe("Run 1 server");
+    expect(btn.getAttribute("title")).toBe("Run 1 server (⌘R)");
     expect(btn.textContent).toContain("Run");
     expect(btn.className).not.toContain("aurora-ws-runtoggle--up");
   });
@@ -883,7 +883,7 @@ describe("WorkspaceContextBar", () => {
     const { container } = render(<WorkspaceContextBar />);
     const btn = container.querySelector(".aurora-ws-runtoggle") as HTMLButtonElement;
     expect(btn.getAttribute("aria-label")).toBe("Stop servers");
-    expect(btn.getAttribute("title")).toBe("Stop 2 servers");
+    expect(btn.getAttribute("title")).toBe("Stop 2 servers (⌘R)");
     expect(btn.textContent).toContain("Stop");
     expect(btn.className).toContain("aurora-ws-runtoggle--up");
   });
