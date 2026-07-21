@@ -24,6 +24,7 @@
 // → `src-tauri/src/lib.rs:44-45`) — no new Rust command for config IO.
 
 import { readTextFile, writeTextFile } from "./sys";
+import { type EnvFileSpec } from "./envFiles";
 
 export type ScriptKind = "setup" | "run" | "archive";
 
@@ -64,6 +65,19 @@ export interface AuroraConfig {
     /** Runs once before workspace teardown. */
     archive: CommandSpec;
   };
+  /**
+   * Per-workspace env files written into the fresh worktree on create, before any
+   * pane spawns or `scripts.setup` runs (see lib/envFiles.ts for the `${port:BASE}`
+   * / `${offset}` / `${workspace}` template substitutions).
+   *
+   * This is the committed home for the gap `$AURORA_PORT` can't close on its own:
+   * a service that reads its port (or a sibling service's URL) from a file it loads
+   * itself never sees the offset, and gitignored files like `.env.local` are not
+   * carried into a `git worktree`. Optional — absent in every config written before
+   * this field existed, so it stays `undefined` rather than `[]` to keep those
+   * files byte-identical on round-trip.
+   */
+  envFiles?: EnvFileSpec[];
 }
 
 export const AURORA_CONFIG_FILENAME = "aurora.json";
@@ -167,6 +181,37 @@ function normalizeCustomMap(raw: unknown, errors: string[]): Record<string, Cust
   return out;
 }
 
+/** Parse/repair the top-level `envFiles` array. Same never-throw/drop-and-report
+ *  contract as the script normalizers: one bad entry can't take out its siblings.
+ *  Path traversal is NOT checked here — `resolveEnvPath` owns that at write time,
+ *  so the guard lives next to the filesystem call it protects. */
+function normalizeEnvFiles(raw: unknown, errors: string[]): EnvFileSpec[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    errors.push("envFiles must be an array of {path, content} — ignored");
+    return [];
+  }
+  const out: EnvFileSpec[] = [];
+  raw.forEach((entry, i) => {
+    const prefix = `envFiles[${i}]`;
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      errors.push(`${prefix}: must be an object — dropped`);
+      return;
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.path !== "string" || !e.path.trim()) {
+      errors.push(`${prefix}: missing/invalid "path" — dropped`);
+      return;
+    }
+    if (typeof e.content !== "string") {
+      errors.push(`${prefix}: missing/invalid "content" — dropped`);
+      return;
+    }
+    out.push({ path: e.path, content: e.content });
+  });
+  return out;
+}
+
 function validateAuroraConfig(raw: unknown): ParseResult {
   const errors: string[] = [];
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -184,7 +229,13 @@ function validateAuroraConfig(raw: unknown): ParseResult {
   const run = normalizeRunArray(s.run, errors);
   const custom = normalizeCustomMap(s.custom, errors);
 
+  const envFiles = normalizeEnvFiles(obj.envFiles, errors);
+
   const config: AuroraConfig = { version: 1, scripts: { setup, run, custom, archive } };
+  // Only attach when non-empty: a config with no env files must stay `undefined`
+  // so `serializeAuroraConfig` doesn't add an `"envFiles": []` key to every
+  // existing committed aurora.json the first time Aurora rewrites it.
+  if (envFiles.length) config.envFiles = envFiles;
   return { ok: errors.length === 0, config, error: errors.length ? errors.join("; ") : null };
 }
 

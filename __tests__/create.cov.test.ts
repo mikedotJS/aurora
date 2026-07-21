@@ -464,6 +464,51 @@ describe("runCreate — success path: offset allocation, install detection, scri
     expect(useStore.getState().notifLog[0]?.sub).toContain("disk full");
   });
 
+  describe("envFiles from the repo's committed aurora.json", () => {
+    const writes = () =>
+      tauri.calls().filter((c) => c.cmd === "write_text_file").map((c) => ({
+        path: String(c.args.path),
+        contents: String(c.args.contents ?? c.args.content ?? ""),
+      }));
+
+    it("materializes aurora.json envFiles into the worktree with ${port:BASE} expanded", async () => {
+      tauri.invoke({
+        list_dir: () => [],
+        read_text_file: () =>
+          JSON.stringify({
+            version: 1,
+            scripts: { setup: null, run: [], custom: {}, archive: null },
+            envFiles: [{ path: "apps/api/.env.local", content: "PORT=${port:3000}\n" }],
+          }),
+      });
+      const r = await runCreate(baseSpec({ portOffset: 10, envFiles: [] }));
+      expect(r.ok).toBe(true);
+
+      const written = writes().find((w) => w.path.endsWith("apps/api/.env.local"));
+      expect(written).toBeDefined();
+      expect(written!.contents).toBe("PORT=3010\n");
+    });
+
+    it("a preset envFile wins over an aurora.json envFile at the same path, and is written once", async () => {
+      tauri.invoke({
+        list_dir: () => [],
+        read_text_file: () =>
+          JSON.stringify({
+            version: 1,
+            scripts: { setup: null, run: [], custom: {}, archive: null },
+            envFiles: [{ path: "shared.env", content: "FROM=aurora-json\n" }],
+          }),
+      });
+      const r = await runCreate(
+        baseSpec({ portOffset: 0, envFiles: [{ path: "shared.env", content: "FROM=preset\n" }] }),
+      );
+      expect(r.ok).toBe(true);
+
+      const shared = writes().filter((w) => w.path.endsWith("shared.env"));
+      expect(shared).toHaveLength(1); // concurrent writes to one path would race
+      expect(shared[0].contents).toBe("FROM=preset\n");
+    });
+  });
 });
 
 describe("port offset — reclaimed on teardown, reused by the next create (task 3.3)", () => {

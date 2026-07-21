@@ -291,8 +291,16 @@ async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
   // spawn / scripts run, so a service that reads its port from a file (not a
   // `$((BASE + AURORA_PORT_OFFSET))` command) starts on the allocated port.
   // Best-effort: a write failure is surfaced but never aborts the workspace.
-  if (spec.envFiles?.length) {
-    const results = await materializeEnvFiles(dir, spec.envFiles, { offset, workspace: workspaceName });
+  //
+  // Two sources, merged by path: the repo's committed `aurora.json` (team-shared,
+  // the normal home for this) and the selected preset (a local, per-user override
+  // living in localStorage). Same path in both → the preset wins, and only ONE
+  // write happens for it: materializeEnvFiles writes specs concurrently, so two
+  // specs sharing a path would race to produce the final bytes.
+  const envFileSpecs = [...(auroraConfig.envFiles ?? []), ...(spec.envFiles ?? [])];
+  const mergedEnvFiles = [...new Map(envFileSpecs.map((s) => [s.path.trim(), s])).values()];
+  if (mergedEnvFiles.length) {
+    const results = await materializeEnvFiles(dir, mergedEnvFiles, { offset, workspace: workspaceName });
     const failed = results.filter((r) => !r.ok);
     if (failed.length) {
       useStore.getState().notify({

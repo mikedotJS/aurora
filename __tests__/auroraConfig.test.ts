@@ -218,6 +218,66 @@ describe("serializeAuroraConfig round-trip", () => {
     expect(parseAuroraConfig(text).config).toEqual(defaultAuroraConfig());
   });
 
+  describe("envFiles — per-workspace env files materialized on create", () => {
+    it("parses a valid top-level envFiles array", () => {
+      const result = parseAuroraConfig(
+        JSON.stringify({
+          version: 1,
+          scripts: { setup: null, run: [], custom: {}, archive: null },
+          envFiles: [{ path: "apps/api/.env.local", content: "PORT=${port:3000}\n" }],
+        }),
+      );
+      expect(result.ok).toBe(true);
+      expect(result.config.envFiles).toEqual([
+        { path: "apps/api/.env.local", content: "PORT=${port:3000}\n" },
+      ]);
+    });
+
+    it("leaves envFiles undefined when absent (no schema churn for existing configs)", () => {
+      const result = parseAuroraConfig(
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], custom: {}, archive: null } }),
+      );
+      expect(result.ok).toBe(true);
+      expect(result.config.envFiles).toBeUndefined();
+    });
+
+    it("drops a malformed entry, reports it, and keeps its siblings", () => {
+      const result = parseAuroraConfig(
+        JSON.stringify({
+          version: 1,
+          scripts: { setup: null, run: [], custom: {}, archive: null },
+          envFiles: [
+            { path: "good.env", content: "A=1" },
+            { path: "", content: "B=2" },
+            { path: "no-content.env" },
+            "nonsense",
+          ],
+        }),
+      );
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("envFiles");
+      expect(result.config.envFiles).toEqual([{ path: "good.env", content: "A=1" }]);
+    });
+
+    it("ignores a non-array envFiles rather than crashing", () => {
+      const result = parseAuroraConfig(
+        JSON.stringify({
+          version: 1,
+          scripts: { setup: null, run: [], custom: {}, archive: null },
+          envFiles: { path: "x" },
+        }),
+      );
+      expect(result.ok).toBe(false);
+      expect(result.config.envFiles).toBeUndefined();
+    });
+
+    it("round-trips envFiles through serialize → parse", () => {
+      const config = defaultAuroraConfig();
+      config.envFiles = [{ path: "apps/welcomer/.env.local", content: "URL=http://localhost:${port:3000}/api\n" }];
+      expect(parseAuroraConfig(serializeAuroraConfig(config)).config).toEqual(config);
+    });
+  });
+
   it("serializes scripts keys in a stable order: setup, run, custom, archive", () => {
     const config = defaultAuroraConfig();
     config.scripts.run = [{ command: "vite" }];
