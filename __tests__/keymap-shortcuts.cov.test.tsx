@@ -40,8 +40,14 @@ const serversCalls: Array<{ fn: "run" | "stop"; wsId: string }> = [];
 let serversUpValue = false;
 let runServersImpl: (id: string) => Promise<void> = () => Promise.resolve();
 let stopServersImpl: (id: string) => Promise<void> = () => Promise.resolve();
+/** ⌘R (down) now resolves the Run Script's command list via `runCommands`
+ *  (backed by aurora.json) instead of the old userScripts port-script regex —
+ *  mocked here like runServers/stopServers since the real aurora.json load is
+ *  out of scope for this file. */
+let runScriptEntriesValue: Array<{ command: string }> = [];
 mock.module("../src/lib/servers", () => ({
   serversUp: () => serversUpValue,
+  runCommands: () => runScriptEntriesValue,
   runServers: (id: string) => {
     serversCalls.push({ fn: "run", wsId: id });
     return runServersImpl(id);
@@ -85,13 +91,6 @@ async function flush() {
   await new Promise((r) => setTimeout(r, 0));
 }
 
-const PORT_SCRIPT = {
-  name: "dev",
-  desc: "",
-  split: false,
-  tasks: [{ dir: ".", cmd: "vite --port $((5173 + AURORA_PORT_OFFSET))" }],
-};
-
 beforeEach(() => {
   tauri.reset();
   addRepoCalls = 0;
@@ -100,6 +99,7 @@ beforeEach(() => {
   serversUpValue = false;
   runServersImpl = () => Promise.resolve();
   stopServersImpl = () => Promise.resolve();
+  runScriptEntriesValue = [];
   useStore.setState({
     command: null,
     panel: null,
@@ -113,6 +113,10 @@ beforeEach(() => {
     railCollapsed: false,
     foregroundState: {},
     serverStatus: {},
+    managedServers: {},
+    auroraConfigs: {},
+    portCollisions: [],
+    runMenuWsId: null,
     notifs: [],
     notifLog: [],
     userScripts: {},
@@ -177,42 +181,55 @@ describe("handleKeyDown — ⌘R run/stop servers", () => {
     expect(serversCalls.length).toBe(0);
   });
 
-  it("preventDefaults but no-ops when the workspace has zero port-scripts", () => {
+  it("preventDefaults but no-ops when the workspace has zero run scripts configured", async () => {
     mkPane("/repo/a");
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [], onEnter: null } } });
+    runScriptEntriesValue = [];
     const evt = keyEvt("r", { metaKey: true });
     handleKeyDown(evt);
     expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+    await flush();
     expect(serversCalls.length).toBe(0);
   });
 
-  it("also no-ops when the workspace has no repoId at all (no port-scripts can resolve)", () => {
+  it("also no-ops when the workspace has no repoId at all (no run scripts can resolve)", async () => {
     mkPane(null);
     handleKeyDown(keyEvt("r", { metaKey: true }));
+    await flush();
     expect(serversCalls.length).toBe(0);
   });
 
-  it("servers DOWN → calls runServers(ws.id) exactly once", () => {
+  it("servers DOWN, single run script → calls runServers(ws.id) exactly once, no menu", async () => {
     const id = mkPane("/repo/a");
     const wsId = wsIdOfPane(id);
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [PORT_SCRIPT], onEnter: null } } });
+    runScriptEntriesValue = [{ command: "web" }];
     serversUpValue = false;
     handleKeyDown(keyEvt("r", { metaKey: true }));
+    await flush();
     expect(serversCalls).toEqual([{ fn: "run", wsId }]);
+    expect(useStore.getState().runMenuWsId).toBeNull();
   });
 
-  it("servers UP → calls stopServers(ws.id) exactly once", () => {
+  it("servers DOWN, >1 run scripts → ALSO calls runServers(ws.id) directly (run-all-in-split, no pick-one menu)", async () => {
     const id = mkPane("/repo/a");
     const wsId = wsIdOfPane(id);
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [PORT_SCRIPT], onEnter: null } } });
+    runScriptEntriesValue = [{ command: "web" }, { command: "api" }];
+    serversUpValue = false;
+    handleKeyDown(keyEvt("r", { metaKey: true }));
+    await flush();
+    expect(serversCalls).toEqual([{ fn: "run", wsId }]);
+    expect(useStore.getState().runMenuWsId).toBeNull(); // no more pick-one menu on the primary ⌘R path
+  });
+
+  it("servers UP → calls stopServers(ws.id) exactly once, synchronously (no menu involved)", () => {
+    const id = mkPane("/repo/a");
+    const wsId = wsIdOfPane(id);
     serversUpValue = true;
     handleKeyDown(keyEvt("r", { metaKey: true }));
     expect(serversCalls).toEqual([{ fn: "stop", wsId }]);
   });
 
-  it("always preventDefaults when a port-script exists, regardless of up/down", () => {
+  it("always preventDefaults on ⌘R with an active workspace, regardless of up/down", () => {
     mkPane("/repo/a");
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [PORT_SCRIPT], onEnter: null } } });
     const evt = keyEvt("r", { metaKey: true });
     handleKeyDown(evt);
     expect((evt.preventDefault as ReturnType<typeof mock>).mock.calls.length).toBe(1);
@@ -221,7 +238,7 @@ describe("handleKeyDown — ⌘R run/stop servers", () => {
   it("a rejected runServers() surfaces a notify with the workspace title and error message", async () => {
     const id = mkPane("/repo/a");
     const title = useStore.getState().workspaces.find((w) => w.id === wsIdOfPane(id))!.title;
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [PORT_SCRIPT], onEnter: null } } });
+    runScriptEntriesValue = [{ command: "web" }];
     serversUpValue = false;
     runServersImpl = () => Promise.reject(new Error("spawn failed"));
     handleKeyDown(keyEvt("r", { metaKey: true }));
@@ -233,7 +250,6 @@ describe("handleKeyDown — ⌘R run/stop servers", () => {
 
   it("a rejected stopServers() surfaces a notify too (stop, not start)", async () => {
     mkPane("/repo/a");
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [PORT_SCRIPT], onEnter: null } } });
     serversUpValue = true;
     stopServersImpl = () => Promise.reject(new Error("kill failed"));
     handleKeyDown(keyEvt("r", { metaKey: true }));
@@ -290,7 +306,7 @@ describe("handleKeyDown — ⌘O/⌘R never forward as PTY control codes", () =>
   it("⌘R with a live pty attached writes nothing to the pty", () => {
     const id = mkPane("/repo/a");
     withPty(id);
-    useStore.setState({ userScripts: { "/repo/a": { scripts: [PORT_SCRIPT], onEnter: null } } });
+    runScriptEntriesValue = [{ command: "web" }];
     handleKeyDown(keyEvt("r", { metaKey: true }));
     expect(tauri.calls().some((c) => c.cmd === "pty_write")).toBe(false);
   });

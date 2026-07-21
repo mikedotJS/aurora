@@ -15,6 +15,8 @@ import { savePersisted, loadRepos, saveRepos, type PersistedWs } from "../lib/wo
 import { loadDirFrecency, saveDirFrecency, bumpDir } from "../lib/dirFrecency";
 import type { RepoConfig } from "../lib/repoConfig";
 import type { ServerStatus, ForegroundState } from "../term/pty";
+import type { AuroraConfig } from "../lib/auroraConfig";
+import type { PortCollision } from "../lib/ports";
 import {
   type Connections,
   type JiraConnection,
@@ -95,6 +97,29 @@ export interface RepoScripts {
   scripts: Script[];
   onEnter: string | null;
 }
+
+/**
+ * Runtime-only record of one managed process (managed-server-lifecycle),
+ * keyed by `${wsId}:${scriptId}` (see lib/servers.ts `managedServerId`).
+ * Never persisted — PTYs/processes don't survive a relaunch.
+ */
+export interface ManagedServerEntry {
+  wsId: string;
+  /** The managedServerId-scoped key — a Run Script entry's `run:<i>` (index
+   *  is the identity; the entry itself carries no id) or a Custom Scripts
+   *  entry's own map key. See lib/servers.ts's module doc "ID SCHEME". */
+  scriptId: string;
+  /** Human-readable label for display (pane header, Run menu) — a Run Script
+   *  entry's `name`/slugified command, or a custom script's key. Optional:
+   *  older/synthetic entries fall back to `scriptId` at the call site. */
+  label?: string;
+  /** The Servers-tab pane displaying this process's output. */
+  paneId: number;
+  status: "starting" | "running" | "exited";
+  exitCode: number | null;
+  /** Real bound ports from the last `server_probe`, per this process. */
+  ports: number[];
+}
 export interface HookInfo {
   name: string;
   label: string;
@@ -155,6 +180,14 @@ export interface PaneState {
   repoRoot: string | null;
   firedHooks: string[];
   hook: HookInfo | null;
+  /**
+   * Set when this pane displays a MANAGED process's own output stream
+   * (server:data) instead of a spawned shell PTY — `${wsId}:${scriptId}`, the
+   * same key used in `managedServers`. Null for every ordinary pane.
+   * Terminal.tsx branches on this to render `ManagedServerPane` instead of
+   * spawning a shell (managed-server-lifecycle).
+   */
+  serverId: string | null;
 }
 
 export interface Group {
@@ -355,6 +388,22 @@ export interface StoreState {
    */
   prepareServerTab: (wsId: string, n: number) => void;
   /**
+   * Ensure a pane exists in `wsId`'s dedicated Servers tab for `serverId`
+   * (managed-server-lifecycle): creates the tab if absent, else appends a
+   * pane (capped at 4 concurrent server panes, same limit as the old
+   * `prepareServerTab`). Reuses an existing pane already assigned to
+   * `serverId` (a restart) by clearing its blocks rather than duplicating it.
+   * Returns the pane id, or null when the cap is hit and no pane for
+   * `serverId` exists yet.
+   */
+  addServerPane: (wsId: string, serverId: string) => number | null;
+  /**
+   * Remove the pane assigned to `serverId` from `wsId`'s Servers tab. If it
+   * was the last server pane, drops the whole tab (serverTabId -> null; a
+   * fresh work tab replaces it if it was the workspace's only tab).
+   */
+  removeServerPane: (wsId: string, serverId: string) => void;
+  /**
    * Remove the server tab for a workspace: drops the Group, fixes active index,
    * clears serverTabId. Also clears serverStatus entries for removed panes.
    * Guard: never removes the workspace's last tab.
@@ -375,6 +424,37 @@ export interface StoreState {
   foregroundState: Record<string, ForegroundState>;
   setForegroundState: (ptyId: string, s: ForegroundState) => void;
   clearForegroundState: (ptyIds: string[]) => void;
+  // managed servers (managed-server-lifecycle) — runtime-only, never persisted.
+  /** Keyed by `${wsId}:${scriptId}` (see lib/servers.ts `managedServerId`). */
+  managedServers: Record<string, ManagedServerEntry>;
+  setManagedServer: (id: string, entry: ManagedServerEntry) => void;
+  patchManagedServer: (id: string, patch: Partial<ManagedServerEntry>) => void;
+  removeManagedServers: (ids: string[]) => void;
+  /** Point a pane at a managed process's output stream (or clear it back to null). */
+  setPaneServerId: (paneId: number, serverId: string | null) => void;
+  /** Cached resolved `aurora.json` (or its legacy-migrated / default fallback)
+   *  per repo root — see lib/auroraConfigStore.ts for the loader. */
+  auroraConfigs: Record<string, AuroraConfig>;
+  setAuroraConfig: (root: string, config: AuroraConfig) => void;
+  /** Latest port-collision scan across live workspaces (lib/ports.ts `detectPortCollisions`). */
+  portCollisions: PortCollision[];
+  setPortCollisions: (collisions: PortCollision[]) => void;
+  /** Which workspace's Run menu is open (task 5.1/5.2) — null when closed.
+   *  Store-level (not component-local state) so ⌘R (lib/keymap.ts) can open it
+   *  from outside WorkspaceContextBar. */
+  runMenuWsId: string | null;
+  setRunMenuWsId: (wsId: string | null) => void;
+  /** Repo root to show the "save as aurora.json" migration-offer banner for
+   *  (task 6.2) — set when a repo with legacy scripts but no committed
+   *  aurora.json is opened/adopted; null when no banner is showing. Session
+   *  state only, never persisted (mirrors runMenuWsId/portCollisions). */
+  migrationBannerRepo: string | null;
+  setMigrationBannerRepo: (root: string | null) => void;
+  /** Repos whose migration banner was dismissed this session — prevents the
+   *  banner from re-nagging every time the same unmigrated repo is reopened.
+   *  Session state only, never persisted. */
+  dismissedMigrationRepos: string[];
+  dismissMigrationBanner: (root: string) => void;
   // tabs (scoped to the active workspace)
   newTab: () => void;
   closeTab: (i: number) => void;
@@ -521,6 +601,7 @@ function newPane(cwd: string, repoRoot: string | null = null): PaneState {
     repoRoot,
     firedHooks: [],
     hook: null,
+    serverId: null,
   };
 }
 
@@ -713,6 +794,13 @@ export const useStore = create<StoreState>((set, get) => ({
   serverStatus: {} as Record<string, ServerStatus>,
   // Runtime-only — not persisted; restored workspaces start with no foreground state.
   foregroundState: {} as Record<string, ForegroundState>,
+  // Runtime-only — not persisted; restored workspaces start with no managed servers.
+  managedServers: {} as Record<string, ManagedServerEntry>,
+  auroraConfigs: {} as Record<string, AuroraConfig>,
+  portCollisions: [] as PortCollision[],
+  runMenuWsId: null,
+  migrationBannerRepo: null,
+  dismissedMigrationRepos: [] as string[],
 
   init: (home, settings, apiKeyPresent, boot) => {
     paneSeq = 1;
@@ -1046,6 +1134,85 @@ export const useStore = create<StoreState>((set, get) => ({
       };
     }),
 
+  addServerPane: (wsId, serverId) => {
+    let result: number | null = null;
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === wsId);
+      if (!ws) return {};
+
+      const existingTab = ws.serverTabId != null ? ws.tabs.find((g) => g.id === ws.serverTabId) : undefined;
+      if (existingTab) {
+        const existingPane = existingTab.panes.find((p) => p.serverId === serverId);
+        if (existingPane) {
+          result = existingPane.id;
+          const tabs = ws.tabs.map((g) =>
+            g.id === existingTab.id
+              ? { ...g, panes: g.panes.map((p) => (p.id === existingPane.id ? { ...p, blocks: [] } : p)) }
+              : g,
+          );
+          return { workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, tabs } : w)) };
+        }
+        if (existingTab.panes.length >= 4) {
+          result = null;
+          return {};
+        }
+        const pane = newPane(ws.dir, ws.repoId);
+        pane.serverId = serverId;
+        result = pane.id;
+        const tabs = ws.tabs.map((g) => (g.id === existingTab.id ? { ...g, panes: [...g.panes, pane] } : g));
+        return { workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, tabs } : w)) };
+      }
+
+      // No (live) server tab yet — create one with a single pane for this server.
+      const group = newGroup(ws.dir, ws.repoId);
+      group.panes[0] = { ...group.panes[0], serverId };
+      result = group.panes[0].id;
+      const newTabs = [...ws.tabs, group];
+      return {
+        workspaces: s.workspaces.map((w) =>
+          w.id === wsId ? { ...w, tabs: newTabs, active: newTabs.length - 1, serverTabId: group.id } : w,
+        ),
+      };
+    });
+    return result;
+  },
+
+  removeServerPane: (wsId, serverId) =>
+    set((s) => {
+      const ws = s.workspaces.find((w) => w.id === wsId);
+      if (!ws || ws.serverTabId == null) return {};
+      const tabIdx = ws.tabs.findIndex((g) => g.id === ws.serverTabId);
+      if (tabIdx === -1) {
+        return { workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, serverTabId: null } : w)) };
+      }
+      const tab = ws.tabs[tabIdx];
+      const remaining = tab.panes.filter((p) => p.serverId !== serverId);
+      if (remaining.length === tab.panes.length) return {}; // nothing to remove
+
+      if (remaining.length > 0) {
+        const active = Math.min(tab.active, remaining.length - 1);
+        const tabs = ws.tabs.map((g, i) => (i === tabIdx ? { ...g, panes: remaining, active } : g));
+        return { workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, tabs } : w)) };
+      }
+
+      // Last server pane removed -> drop the whole tab (same end-state as dropServerTab).
+      if (ws.tabs.length <= 1) {
+        const freshGroup = newGroup(ws.dir, ws.repoId);
+        return {
+          workspaces: s.workspaces.map((w) =>
+            w.id === wsId ? { ...w, tabs: [freshGroup], active: 0, serverTabId: null } : w,
+          ),
+        };
+      }
+      const tabs = ws.tabs.filter((_, i) => i !== tabIdx);
+      let active = ws.active;
+      if (tabIdx < active) active -= 1;
+      else if (tabIdx === active) active = Math.min(active, tabs.length - 1);
+      return {
+        workspaces: s.workspaces.map((w) => (w.id === wsId ? { ...w, tabs, active, serverTabId: null } : w)),
+      };
+    }),
+
   setServerStatus: (ptyId, status) =>
     set((s) => {
       // No-op guard (code review #2): the ~1.5s poll (running.ts) calls this
@@ -1077,6 +1244,35 @@ export const useStore = create<StoreState>((set, get) => ({
     }),
 
   clearForegroundState: (ptyIds) => set((s) => ({ foregroundState: omitKeys(s.foregroundState, ptyIds) })),
+
+  setManagedServer: (id, entry) => set((s) => ({ managedServers: { ...s.managedServers, [id]: entry } })),
+  patchManagedServer: (id, patch) =>
+    set((s) => {
+      const prev = s.managedServers[id];
+      if (!prev) return {};
+      return { managedServers: { ...s.managedServers, [id]: { ...prev, ...patch } } };
+    }),
+  removeManagedServers: (ids) =>
+    set((s) => {
+      if (!ids.length) return {};
+      const next = { ...s.managedServers };
+      for (const id of ids) delete next[id];
+      return { managedServers: next };
+    }),
+  setPaneServerId: (paneId, serverId) =>
+    set((s) => ({ workspaces: patchPane(s.workspaces, paneId, { serverId }) })),
+
+  setAuroraConfig: (root, config) => set((s) => ({ auroraConfigs: { ...s.auroraConfigs, [root]: config } })),
+  setPortCollisions: (collisions) => set({ portCollisions: collisions }),
+  setRunMenuWsId: (wsId) => set({ runMenuWsId: wsId }),
+  setMigrationBannerRepo: (root) => set({ migrationBannerRepo: root }),
+  dismissMigrationBanner: (root) =>
+    set((s) => ({
+      migrationBannerRepo: s.migrationBannerRepo === root ? null : s.migrationBannerRepo,
+      dismissedMigrationRepos: s.dismissedMigrationRepos.includes(root)
+        ? s.dismissedMigrationRepos
+        : [...s.dismissedMigrationRepos, root],
+    })),
 
   newTab: () =>
     set((s) => ({

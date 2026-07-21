@@ -14,6 +14,7 @@ import { WorkspaceCommand } from "./components/WorkspaceCommand";
 import { WorkspaceSettings } from "./components/WorkspaceSettings";
 import { WorkspacesIntro } from "./components/WorkspacesIntro";
 import { WorkspaceTour } from "./components/WorkspaceTour";
+import { MigrationBanner } from "./components/MigrationBanner";
 import {
   useStore,
   activePane,
@@ -33,6 +34,7 @@ import { loadRepoConfigs } from "./lib/repoConfig";
 import { loadConnections } from "./lib/connections";
 import { migrateToConnections } from "./lib/migrateConnections";
 import { maybeFireHook } from "./lib/scripts";
+import { checkMigrationOffer } from "./lib/auroraConfigStore";
 import { startNotificationPoller } from "./lib/notifications";
 import { checkForUpdates } from "./lib/updater";
 import { keyPresent } from "./lib/keychain";
@@ -174,6 +176,10 @@ export default function App() {
         const st = useStore.getState();
         const ws = workspaceOfPane(st, apId);
         if (ws && !ws.repoId) st.adoptRepo(ws.id, { root: info.main_root, name: info.name, defaultBranch: info.default_branch });
+        // Repo-open migration offer (managed-server-lifecycle task 6.2): fire
+        // whenever a repo becomes known to the active pane, not just when the
+        // Scripts panel happens to be opened. Fire-and-forget; never blocks.
+        void checkMigrationOffer(info.main_root);
       }
     });
     return () => {
@@ -279,6 +285,7 @@ export default function App() {
           {/* The Home terminal guarantees an active workspace after `init` — there
               is no reachable "no active workspace" state, so the content column
               always renders the active terminal (never a central empty pane). */}
+          <MigrationBanner />
           <WorkspaceContextBar />
           <TabStrip />
           <PaneArea />

@@ -2,7 +2,7 @@
 // sheet: empty state, row rendering, keyboard nav (↑↓ ↵), mouse hover/click,
 // the "edit scripts" link, and the shared Sheet/Empty chrome it uses.
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { render, fireEvent, cleanup } from "@testing-library/react";
+import { render, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { ScriptsSheet } from "../src/components/ScriptsSheet";
 import { useStore, type PaneState, type Group, type Workspace } from "../src/state/store";
 import { addScript, updateScript, updateTask } from "../src/lib/scripts";
@@ -80,7 +80,12 @@ function setup(pane: PaneState | null, extra: { home?: string } = {}) {
 
 beforeEach(() => {
   tauri.reset();
-  useStore.setState({ userScripts: {} }, false);
+  tauri.invoke({
+    read_text_file: () => {
+      throw new Error("ENOENT");
+    },
+  });
+  useStore.setState({ userScripts: {}, auroraConfigs: {} }, false);
 });
 afterEach(() => cleanup());
 
@@ -178,6 +183,50 @@ describe("ScriptsSheet — populated list", () => {
     setup(null);
     expect(() => fireEvent.keyDown(window, { key: "Enter" })).not.toThrow();
     expect(tauri.calls().some((c) => c.cmd === "pty_write")).toBe(false);
+  });
+});
+
+describe("ScriptsSheet — aurora.json migration offer (managed-server-lifecycle 6.2)", () => {
+  it("shows a 'Save as aurora.json' banner when scripts exist locally and no aurora.json is committed, and accepting it writes and hides the banner", async () => {
+    const root = "/repo";
+    addScript(root);
+    updateScript(root, 0, { name: "dev" });
+    updateTask(root, 0, 0, { cmd: "npm run dev" });
+    const pane = mkPane();
+    setup(pane);
+
+    const { getByText, queryByText } = render(<ScriptsSheet />);
+    await waitFor(() => expect(queryByText(/Save as aurora.json/)).toBeTruthy());
+
+    fireEvent.click(getByText("Save as aurora.json"));
+    await waitFor(() => expect(queryByText(/Save as aurora.json/)).toBeNull());
+
+    expect(tauri.lastCall("write_text_file")?.args).toMatchObject({ root: "/repo", path: "/repo/aurora.json" });
+  });
+
+  it("does not show the banner when a committed aurora.json already exists", async () => {
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [{ command: "bun" }], archive: null } }),
+    });
+    const root = "/repo";
+    addScript(root);
+    updateScript(root, 0, { name: "dev" });
+    updateTask(root, 0, 0, { cmd: "npm run dev" });
+    const pane = mkPane();
+    setup(pane);
+
+    const { queryByText } = render(<ScriptsSheet />);
+    await waitFor(() => expect(tauri.calls().some((c) => c.cmd === "read_text_file")).toBe(true));
+    expect(queryByText(/Save as aurora.json/)).toBeNull();
+  });
+
+  it("does not show the banner when there are no local scripts to migrate", async () => {
+    const pane = mkPane();
+    setup(pane);
+    const { queryByText } = render(<ScriptsSheet />);
+    await waitFor(() => expect(tauri.calls().some((c) => c.cmd === "read_text_file")).toBe(true));
+    expect(queryByText(/Save as aurora.json/)).toBeNull();
   });
 });
 

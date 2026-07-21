@@ -65,6 +65,12 @@ const DEFAULTS: Record<string, InvokeHandler> = {
   pty_capture_server_pgid: () => undefined,
   pty_foreground_state: () => ({ running: false, pgid: null }),
   pty_signal_server: () => false,
+  // managed-server-lifecycle
+  write_text_file: () => undefined,
+  server_spawn: () => ({ pid: 1, pgid: 1, ptyId: "srv-test" }),
+  server_status: () => ({ state: "running" }),
+  server_stop: () => undefined,
+  server_probe: () => [],
 };
 
 let handlers: Record<string, InvokeHandler> = {};

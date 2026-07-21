@@ -6,28 +6,33 @@ import { useStore } from "../state/store";
 import { worktreeAdd, worktreeRemove } from "./worktree";
 import { validateBranchName, slugify } from "./branchName";
 import { validateBranchNameBackend, listDir } from "./sys";
-import { runScript, runCommand } from "./scripts";
+import { runCommand } from "./scripts";
 import { getRepoConfig, type Preset } from "./repoConfig";
 import { presetCreateFields } from "./presets";
 import { materializeEnvFiles, type EnvFileSpec } from "./envFiles";
+import { AURORA_PORT_BASE } from "./ports";
+import { ensureAuroraConfigLoaded } from "./auroraConfigStore";
+import { commandSpecToShell } from "./auroraConfig";
 
 const PORT_STEP = 10;
 
 /**
  * The port offset for a new workspace. A fixed preset offset is used as-is; an
- * `auto`/absent offset gets the lowest unused multiple of the step among the
- * repo's live workspaces — so two live workspaces never share a slot.
+ * `auto`/absent offset gets the lowest unused multiple of the step among ALL
+ * live workspaces of ALL repos — not just this repo's (managed-server-lifecycle
+ * fault #6: a same-repo-only scan lets two DIFFERENT repos' workspaces land on
+ * the same offset, which collides for real once both bind their absolute
+ * `AURORA_PORT`/legacy `$((3000+AURORA_PORT_OFFSET))` on the same machine).
  */
-function allocOffset(repoRoot: string, presetOffset: "auto" | number | undefined): number {
+function allocOffset(presetOffset: "auto" | number | undefined): number {
   if (typeof presetOffset === "number") return presetOffset;
   const used = new Set<number>();
   for (const w of useStore.getState().workspaces) {
-    if (w.repoId !== repoRoot) continue;
     const n = parseInt(w.env?.AURORA_PORT_OFFSET ?? "", 10);
-    // A same-repo lane with no explicit offset (the main checkout, or any lane
-    // not created through runCreate) runs at the effective offset 0 — the shell
-    // expands the unset $AURORA_PORT_OFFSET to 0 — so reserve slot 0 for it,
-    // else the first auto workspace collides with the main checkout's ports.
+    // A lane with no explicit offset (a repo's main checkout, or any manual
+    // lane not created through runCreate) runs at the effective offset 0 — the
+    // shell expands the unset $AURORA_PORT_OFFSET to 0 — so reserve slot 0 for
+    // it, else the first auto workspace (of ANY repo) collides with it.
     used.add(Number.isNaN(n) ? 0 : n);
   }
   let off = 0;
@@ -40,8 +45,14 @@ function allocOffset(repoRoot: string, presetOffset: "auto" | number | undefined
  * the repo's lockfile (a new git worktree has no `node_modules` — they're
  * gitignored and not carried over). Returns null for repos we don't recognize as
  * a JS project, so non-JS worktrees get no install step.
+ *
+ * NOT called automatically on create anymore (new scripts model: Setup Script
+ * is the ONE thing that auto-runs at workspace creation — the user puts
+ * `bun install`/`pnpm install`/etc there themselves if they want it; no more
+ * magic install inference). Still exported for the scripts-editor UI and
+ * tests that want to offer it as a one-click Setup Script suggestion.
  */
-async function installCommand(root: string): Promise<string | null> {
+export async function installCommand(root: string): Promise<string | null> {
   const names = new Set((await listDir(root, true)).map((e) => e.name));
   if (names.has("bun.lockb") || names.has("bun.lock")) return "bun install";
   if (names.has("pnpm-lock.yaml")) return "pnpm install";
@@ -49,6 +60,17 @@ async function installCommand(root: string): Promise<string | null> {
   if (names.has("package-lock.json")) return "npm install";
   if (names.has("package.json")) return "npm install"; // JS project, no lockfile
   return null;
+}
+
+/**
+ * The prelude that runs before a workspace's on-open script: the repo's
+ * committed `aurora.json` `scripts.setup`, or nothing. Setup-only now — the
+ * auto-inferred install fallback is gone (new scripts model: no more magic
+ * install; a repo with no `scripts.setup` runs nothing extra on create).
+ * Extracted (not just inlined) so this decision stays directly testable.
+ */
+export function createPrelude(setup: string | null): string | undefined {
+  return setup ?? undefined;
 }
 
 export type CreateSource = "branch" | "describe" | "clone" | "jira";
@@ -235,20 +257,35 @@ async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
   const res = await worktreeAdd(spec.repoRoot, dir, spec.branch, spec.baseBranch, spec.newBranch);
   if (!res.ok) return { ok: false, error: humanize(res.error, spec.branch) };
 
-  // Resolve the workspace env: preset env + a collision-free port offset exposed
-  // to the panes as $AURORA_PORT_OFFSET. The offset is the sole port primitive —
-  // no base port, no automatic PORT injection. Generated scripts bind their own
-  // default+offset per server (e.g. `vite --port $((5173 + AURORA_PORT_OFFSET))`).
-  // $AURORA_WORKSPACE_NAME (the worktree dir leaf) is also exported for
-  // namespacing (Docker compose project, DB names) — parity with Conductor's
-  // CONDUCTOR_WORKSPACE_NAME.
-  const offset = allocOffset(spec.repoRoot, spec.portOffset);
+  // Resolve the workspace env: preset env + a collision-free port offset,
+  // exposed both as the legacy $AURORA_PORT_OFFSET (arithmetic idiom,
+  // `$((3000+AURORA_PORT_OFFSET))`) AND the absolute $AURORA_PORT
+  // (managed-server-lifecycle) — `AURORA_PORT_BASE + offset` is numerically
+  // identical to the legacy idiom, so migration is lossless: unmigrated
+  // scripts keep working unchanged, new scripts do `-p $AURORA_PORT`.
+  // Conductor-parity vars ($AURORA_WORKSPACE_NAME/_PATH/_ROOT_PATH/
+  // _DEFAULT_BRANCH/_IS_LOCAL) are also exported for namespacing (Docker
+  // compose project, DB names) and script portability.
+  const offset = allocOffset(spec.portOffset);
   const workspaceName = dir.split("/").filter(Boolean).pop() ?? spec.branch;
+  const repoDefaultBranch =
+    useStore.getState().repos.find((r) => r.root === spec.repoRoot)?.defaultBranch ?? spec.baseBranch;
   const env: Record<string, string> = {
     ...(spec.env ?? {}),
     AURORA_PORT_OFFSET: String(offset),
+    AURORA_PORT: String(AURORA_PORT_BASE + offset),
     AURORA_WORKSPACE_NAME: workspaceName,
+    AURORA_WORKSPACE_PATH: dir,
+    AURORA_ROOT_PATH: spec.repoRoot,
+    AURORA_DEFAULT_BRANCH: repoDefaultBranch,
+    AURORA_IS_LOCAL: "1",
   };
+
+  // The repo's committed `aurora.json`, resolved BEFORE anything writes into the
+  // worktree or reads the active workspace: it supplies both the env files below
+  // and the `scripts.setup` prelude further down (which must be resolved before
+  // createWorkspace — see that call site).
+  const auroraConfig = await ensureAuroraConfigLoaded(spec.repoRoot);
 
   // Materialize any per-workspace env files into the fresh worktree BEFORE panes
   // spawn / scripts run, so a service that reads its port from a file (not a
@@ -268,11 +305,17 @@ async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
     }
   }
 
-  // Resolve the install command BEFORE createWorkspace so no await sits between
-  // createWorkspace (which makes the new workspace active) and the runScript
-  // call below — otherwise the active workspace could change during the await
-  // and a split on-open script would fan out into the wrong workspace's panes.
-  const install = await installCommand(spec.repoRoot);
+  // `scripts.setup` is resolved here (from the config loaded above) so no await
+  // sits between createWorkspace — which makes the new workspace active — and
+  // the runCommand call below; otherwise the active workspace could change
+  // during the await and the setup command would land in the wrong pane.
+  //
+  // New scripts model: `scripts.setup` is the ONLY thing that auto-runs on
+  // create — no more auto-inferred install fallback. A repo with no `setup`
+  // configured runs nothing extra (the user puts `bun install`/etc in Setup
+  // themselves if they want it).
+  const setup = commandSpecToShell(auroraConfig.scripts.setup);
+  const prelude = createPrelude(setup);
 
   let wsId: string;
   try {
@@ -296,20 +339,23 @@ async function runCreateInner(spec: CreateSpec): Promise<CreateResult> {
     return { ok: false, error: String(e) };
   }
 
-  // Install dependencies into the fresh worktree (it has no node_modules), then
-  // run the on-open script once the new workspace's panes exist. `install` was
+  // Run the setup/install prelude into the fresh worktree (it has no
+  // node_modules, and a configured `scripts.setup` hasn't run yet), then the
+  // on-open script once the new workspace's panes exist. `prelude` was
   // resolved above (before createWorkspace) so this stretch has no await.
   const st = useStore.getState();
   const w = st.workspaces.find((x) => x.id === wsId);
   const g = w?.tabs[w.active];
   const pane = g?.panes[g.active];
-  if (pane) {
-    if (spec.scriptName) {
-      // Chain install before the script so they run as one ordered block.
-      runScript(pane.id, spec.scriptName, { lookupRoot: spec.repoRoot, execBase: dir, prelude: install ?? undefined });
-    } else {
-      if (install) runCommand(pane.id, install);
-    }
+  // New scripts model: on create we run ONLY the Setup Script (`prelude`), and
+  // UNCONDITIONALLY. The legacy preset "run on open" script used to be typed
+  // into this pane here — that's now superseded by managed Run Scripts (Run /
+  // ⌘R launches them in split panes), so it no longer auto-runs on create. And
+  // setup must never be gated behind a script lookup: previously a missing/
+  // renamed on-open script made `runScript` early-return, silently dropping the
+  // Setup Script (the "setup doesn't run on create" bug).
+  if (pane && prelude) {
+    runCommand(pane.id, prelude);
   }
   return { ok: true, wsId };
 }

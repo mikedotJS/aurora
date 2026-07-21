@@ -4,6 +4,7 @@ mod glab;
 mod jira;
 mod pty;
 mod repoconfig;
+mod server;
 mod sys;
 
 use tauri::Manager;
@@ -31,6 +32,7 @@ pub fn run() {
 
     let app = builder
         .manage(pty::PtyManager::default())
+        .manage(server::ServerManager::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -40,6 +42,10 @@ pub fn run() {
             pty::pty_server_status,
             pty::pty_foreground_state,
             pty::pty_signal_server,
+            server::server_spawn,
+            server::server_status,
+            server::server_stop,
+            server::server_probe,
             sys::list_dir,
             sys::read_text_file,
             sys::write_text_file,
@@ -99,6 +105,7 @@ pub fn run() {
         match event {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 handle.state::<pty::PtyManager>().kill_all();
+                handle.state::<server::ServerManager>().kill_all();
             }
             _ => {}
         }

@@ -122,6 +122,14 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
   const fgState = useStore((s) => (pane.ptyId ? s.foregroundState[pane.ptyId] : undefined));
   const running = paneRunning(pane, serverStatus, fgState);
 
+  // Servers-tab split panes (managed-server-lifecycle): `pane.serverId` set ==
+  // this pane displays a managed run/custom script's own output, not a plain
+  // shell. `managedServers` carries the real scriptId + starting/running/
+  // exited status, so the split header can name which script owns each pane
+  // instead of every pane reading as an anonymous shell (they'd otherwise all
+  // just show the same workspace cwd — indistinguishable from each other).
+  const managedEntry = useStore((s) => (pane.serverId ? s.managedServers[pane.serverId] : undefined));
+
   const showKeyEntry = keyEntry && isActive;
   // While a server holds the pane (running), the prompt line is simply hidden —
   // the pane reads as attached, like a plain terminal with a foreground process.
@@ -191,7 +199,41 @@ export const Pane = memo(function Pane({ pane, index, isActive, multiple }: Prop
           }}
         >
           <span style={{ color: isActive ? "var(--ac)" : "var(--faint)", fontSize: 7 }}>●</span>
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cwd}</span>
+          {pane.serverId ? (
+            <>
+              <span style={{ color: "var(--acd)", flex: "0 0 auto" }} aria-hidden>
+                ⚡
+              </span>
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  color: isActive ? "var(--fg)" : "var(--faint)",
+                }}
+              >
+                {managedEntry?.label ?? managedEntry?.scriptId ?? pane.serverId}
+              </span>
+              <span
+                title={managedEntry ? `${managedEntry.status}` : undefined}
+                style={{
+                  marginLeft: "auto",
+                  flex: "0 0 auto",
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background:
+                    managedEntry?.status === "running"
+                      ? "var(--ok)"
+                      : managedEntry?.status === "starting"
+                        ? "var(--warn)"
+                        : "var(--faint)",
+                }}
+              />
+            </>
+          ) : (
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cwd}</span>
+          )}
         </div>
       )}
 

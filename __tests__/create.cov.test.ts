@@ -12,10 +12,13 @@ import {
   buildCreateSpec,
   resolveCreateDefaults,
   runCreate,
+  installCommand,
+  createPrelude,
   type BuildCreateSpecInput,
   type CreateSpec,
   type Preset,
 } from "../src/lib/create";
+import { deleteWorkspace } from "../src/lib/teardown";
 
 const REPO = { root: "/repo/aurora", name: "aurora", defaultBranch: "repo-default" };
 
@@ -27,6 +30,11 @@ beforeEach(() => {
       repos: [],
       activeWs: null,
       repoConfigs: {},
+      // auroraConfigStore.ts caches by repo root in this map — without resetting
+      // it, a later test's read_text_file override is silently ignored (the
+      // earlier test's cached config, e.g. the default from a no-setup create,
+      // wins) since ensureAuroraConfigLoaded short-circuits on a cache hit.
+      auroraConfigs: {},
     },
     false,
   );
@@ -172,6 +180,59 @@ describe("buildCreateSpec", () => {
   });
 });
 
+// ── createPrelude / installCommand ──────────────────────────────────────────
+//
+// New scripts model: `installCommand` is no longer called automatically by
+// `runCreate` (see the "no install step automatically" test below) — Setup
+// Script (aurora.json `scripts.setup`) is the ONLY thing that auto-runs on
+// create. Both functions stay exported (scripts-editor UI / a one-click
+// "suggest an install command" affordance could still use `installCommand`),
+// so their own branches are tested directly here rather than going uncovered.
+
+describe("createPrelude — setup only, no auto-install fallback", () => {
+  it("a configured setup is returned as-is", () => {
+    expect(createPrelude("bun install")).toBe("bun install");
+  });
+
+  it("no setup → undefined (create.ts runs nothing extra)", () => {
+    expect(createPrelude(null)).toBeUndefined();
+  });
+});
+
+describe("installCommand — lockfile detection (not auto-invoked by runCreate anymore)", () => {
+  beforeEach(() => tauri.reset());
+
+  it("detects bun.lockb", async () => {
+    tauri.invoke({ list_dir: () => [{ name: "bun.lockb", isDir: false }] });
+    expect(await installCommand("/repo")).toBe("bun install");
+  });
+
+  it("detects pnpm-lock.yaml", async () => {
+    tauri.invoke({ list_dir: () => [{ name: "pnpm-lock.yaml", isDir: false }] });
+    expect(await installCommand("/repo")).toBe("pnpm install");
+  });
+
+  it("detects yarn.lock", async () => {
+    tauri.invoke({ list_dir: () => [{ name: "yarn.lock", isDir: false }] });
+    expect(await installCommand("/repo")).toBe("yarn install");
+  });
+
+  it("detects package-lock.json", async () => {
+    tauri.invoke({ list_dir: () => [{ name: "package-lock.json", isDir: false }] });
+    expect(await installCommand("/repo")).toBe("npm install");
+  });
+
+  it("detects a bare package.json (no lockfile) → npm install", async () => {
+    tauri.invoke({ list_dir: () => [{ name: "package.json", isDir: false }] });
+    expect(await installCommand("/repo")).toBe("npm install");
+  });
+
+  it("non-JS project (no recognized files) → null", async () => {
+    tauri.invoke({ list_dir: () => [{ name: "Cargo.toml", isDir: false }] });
+    expect(await installCommand("/repo")).toBeNull();
+  });
+});
+
 // ── runCreate ─────────────────────────────────────────────────────────────────
 
 describe("runCreate — validation failures short-circuit before any invoke", () => {
@@ -277,82 +338,176 @@ describe("runCreate — success path: offset allocation, install detection, scri
   });
 
   it("portOffset 'auto' with no existing workspaces for the repo → offset 0", async () => {
-    tauri.invoke({ list_dir: () => [] }); // no lockfile → non-JS, no install
     const r = await runCreate(baseSpec());
     expect(r.ok).toBe(true);
     const ws = useStore.getState().workspaces.find((w) => (r.ok ? w.id === r.wsId : false));
     expect(ws?.env.AURORA_PORT_OFFSET).toBe("0");
   });
 
-  it("portOffset 'auto' picks the lowest unused multiple of 10, ignoring other repos + NaN offsets", async () => {
+  it("portOffset 'auto' picks the lowest unused multiple of 10 across ALL repos (cross-repo), ignoring NaN offsets", async () => {
     useStore.setState(
       {
         workspaces: [
           { id: "w1", repoId: REPO.root, env: { AURORA_PORT_OFFSET: "0" } } as never,
           { id: "w2", repoId: REPO.root, env: { AURORA_PORT_OFFSET: "10" } } as never,
-          { id: "w3", repoId: "/other/repo", env: { AURORA_PORT_OFFSET: "0" } } as never, // different repo — ignored
+          // A DIFFERENT repo's live workspace at offset 20 must still be reserved —
+          // managed-server-lifecycle fault #6: a same-repo-only scan let two
+          // different repos collide on the same real OS port once both bound it.
+          { id: "w3", repoId: "/other/repo", env: { AURORA_PORT_OFFSET: "20" } } as never,
           { id: "w4", repoId: REPO.root, env: { AURORA_PORT_OFFSET: "not-a-number" } } as never, // NaN — ignored
         ],
       },
       false,
     );
-    tauri.invoke({ list_dir: () => [] });
     const r = await runCreate(baseSpec());
     expect(r.ok).toBe(true);
     const ws = useStore.getState().workspaces.find((w) => (r.ok ? w.id === r.wsId : false));
-    expect(ws?.env.AURORA_PORT_OFFSET).toBe("20");
+    expect(ws?.env.AURORA_PORT_OFFSET).toBe("30");
   });
 
   it("portOffset a fixed number is used as-is (no scan)", async () => {
-    tauri.invoke({ list_dir: () => [] });
     const r = await runCreate(baseSpec({ portOffset: 777 }));
     expect(r.ok).toBe(true);
     const ws = useStore.getState().workspaces.find((w) => (r.ok ? w.id === r.wsId : false));
     expect(ws?.env.AURORA_PORT_OFFSET).toBe("777");
   });
 
-  it("detects bun.lockb and runs the on-open script with the install as a prelude (scriptName set)", async () => {
-    tauri.invoke({ list_dir: () => [{ name: "bun.lockb", isDir: false }] });
-    const r = await runCreate(baseSpec({ scriptName: "dev" }));
-    expect(r.ok).toBe(true);
-  });
-
-  it("detects pnpm-lock.yaml and runs the bare install command (no scriptName)", async () => {
-    tauri.invoke({ list_dir: () => [{ name: "pnpm-lock.yaml", isDir: false }] });
+  it("create runs NO install step automatically anymore — list_dir is never called (new scripts model: no magic install)", async () => {
     const r = await runCreate(baseSpec());
     expect(r.ok).toBe(true);
+    // Regression guard: runCreateInner used to call installCommand(spec.repoRoot),
+    // which lists the worktree dir to sniff a lockfile. That call is gone — Setup
+    // Script (aurora.json scripts.setup) is now the ONLY thing that auto-runs on
+    // create, and a repo with no `setup` runs nothing extra.
+    expect(tauri.calls().some((c) => c.cmd === "list_dir")).toBe(false);
   });
 
-  it("detects yarn.lock", async () => {
-    tauri.invoke({ list_dir: () => [{ name: "yarn.lock", isDir: false }] });
+  it("no committed aurora.json → auroraConfigs caches the default (setup: null), create still succeeds with no prelude", async () => {
     const r = await runCreate(baseSpec());
     expect(r.ok).toBe(true);
+    expect(useStore.getState().auroraConfigs[REPO.root]?.scripts.setup).toBeNull();
   });
 
-  it("detects package-lock.json", async () => {
-    tauri.invoke({ list_dir: () => [{ name: "package-lock.json", isDir: false }] });
+  it("a committed aurora.json's scripts.setup is loaded into auroraConfigs during create (the setup-only prelude wiring)", async () => {
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({
+          version: 1,
+          scripts: { setup: "bun install", run: [], custom: {}, archive: null },
+        }),
+    });
     const r = await runCreate(baseSpec());
     expect(r.ok).toBe(true);
+    expect(useStore.getState().auroraConfigs[REPO.root]?.scripts.setup).toBe("bun install");
   });
 
-  it("detects a bare package.json (no lockfile) → npm install", async () => {
-    tauri.invoke({ list_dir: () => [{ name: "package.json", isDir: false }] });
-    const r = await runCreate(baseSpec());
+  it("DISPATCHES the Setup Script on create even when a preset on-open script (scriptName) is set but missing — setup is not gated behind the legacy script lookup", async () => {
+    // Regression (live-caught): create used to run setup only as the prelude of
+    // the legacy on-open `runScript`; a truthy-but-missing `scriptName` made
+    // runScript early-return and silently DROP the Setup Script. Setup must now
+    // run unconditionally (servers come from managed Run Scripts / ⌘R).
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: "bun install", run: [], custom: {}, archive: null } }),
+    });
+    const r = await runCreate(baseSpec({ scriptName: "ghost-onopen" }));
     expect(r.ok).toBe(true);
-  });
-
-  it("non-JS project (no recognized files) → no install, no scriptName → neither runScript nor runCommand", async () => {
-    tauri.invoke({ list_dir: () => [{ name: "Cargo.toml", isDir: false }] });
-    const r = await runCreate(baseSpec());
-    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Mark the freshly-created pane ready so the pending runWhenReady tick sends.
+    const ws = useStore.getState().workspaces.find((w) => w.id === r.wsId)!;
+    const g = ws.tabs[ws.active];
+    const paneId = g.panes[g.active].id;
+    useStore.getState().setPaneRuntime(paneId, { ptyId: "pty-setup", isZsh: false });
+    useStore.getState().setReady(paneId);
+    // runWhenReady polls ~every 60ms; poll for the dispatch (real timers).
+    const start = Date.now();
+    let sent = false;
+    while (Date.now() - start < 1500) {
+      if (tauri.calls().some((c) => c.cmd === "pty_write" && String(c.args.data).includes("bun install"))) {
+        sent = true;
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 25));
+    }
+    expect(sent).toBe(true); // setup dispatched despite the missing on-open script
   });
 
   it("bakes the workspace title from spec.title, falling back to branch when title is empty", async () => {
-    tauri.invoke({ list_dir: () => [] });
     const r = await runCreate(baseSpec({ title: "" }));
     expect(r.ok).toBe(true);
     const ws = useStore.getState().workspaces.find((w) => (r.ok ? w.id === r.wsId : false));
     expect(ws?.title).toBe("feat/my-feature");
+  });
+
+  it("an env-file spec that escapes the workspace surfaces a warn notify but doesn't fail the create", async () => {
+    const r = await runCreate(baseSpec({ envFiles: [{ path: "../escape.env", content: "X=1" }] }));
+    expect(r.ok).toBe(true);
+    expect(useStore.getState().notifLog[0]).toMatchObject({ headline: expect.stringContaining("env file") });
+  });
+
+  it("a write failure for one env file is reported without blocking the others (materializeEnvFiles per-spec independence)", async () => {
+    tauri.invoke({
+      list_dir: () => [],
+      write_text_file: (a) => {
+        if ((a.path as string).includes("bad")) throw new Error("disk full");
+      },
+    });
+    const r = await runCreate(
+      baseSpec({
+        envFiles: [
+          { path: "good.env", content: "A=1" },
+          { path: "bad.env", content: "B=2" },
+        ],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(useStore.getState().notifLog[0]?.sub).toContain("disk full");
+  });
+
+});
+
+describe("port offset — reclaimed on teardown, reused by the next create (task 3.3)", () => {
+  it("frees the departed workspace's offset for the next auto-create", async () => {
+    tauri.invoke({
+      validate_branch_name: () => ({ ok: true, message: null, enforced: false }),
+      list_dir: () => [],
+      path_resolve: (a) => a.path as string,
+    });
+
+    // Create A → offset 0 (first auto-allocation for this repo).
+    tauri.invoke({ worktree_add: () => ({ path: "/repo/.aurora-worktrees/aurora/feat-a", branch: "feat/a", head: "a" }) });
+    const rA = await runCreate(baseSpec({ branch: "feat/a" }));
+    expect(rA.ok).toBe(true);
+    const wsAId = rA.ok ? rA.wsId : "";
+    expect(useStore.getState().workspaces.find((w) => w.id === wsAId)?.env.AURORA_PORT_OFFSET).toBe("0");
+
+    // Create B → offset 10 (A still holds 0, so B gets the next free slot).
+    tauri.invoke({ worktree_add: () => ({ path: "/repo/.aurora-worktrees/aurora/feat-b", branch: "feat/b", head: "b" }) });
+    const rB = await runCreate(baseSpec({ branch: "feat/b" }));
+    expect(rB.ok).toBe(true);
+    expect(useStore.getState().workspaces.find((w) => w.id === (rB.ok ? rB.wsId : ""))?.env.AURORA_PORT_OFFSET).toBe("10");
+
+    // Tear down A through the real orchestrator (not a manual store splice) —
+    // this is the reclamation path under test.
+    tauri.invoke({
+      worktree_list: () => [
+        { path: REPO.root, branch: "main", head: null },
+        { path: "/repo/.aurora-worktrees/aurora/feat-a", branch: "feat/a", head: null },
+        { path: "/repo/.aurora-worktrees/aurora/feat-b", branch: "feat/b", head: null },
+      ],
+      worktree_remove: () => undefined,
+      pty_kill: () => undefined,
+    });
+    const rDel = await deleteWorkspace(wsAId);
+    expect(rDel).toEqual({ ok: true });
+    expect(useStore.getState().workspaces.some((w) => w.id === wsAId)).toBe(false);
+
+    // Create C → offset 0 REUSED (A's slot was freed by teardown), not 20 —
+    // proves allocOffset's live-workspace scan actually observes the removal.
+    tauri.invoke({ worktree_add: () => ({ path: "/repo/.aurora-worktrees/aurora/feat-c", branch: "feat/c", head: "c" }) });
+    const rC = await runCreate(baseSpec({ branch: "feat/c" }));
+    expect(rC.ok).toBe(true);
+    expect(useStore.getState().workspaces.find((w) => w.id === (rC.ok ? rC.wsId : ""))?.env.AURORA_PORT_OFFSET).toBe("0");
   });
 });
 

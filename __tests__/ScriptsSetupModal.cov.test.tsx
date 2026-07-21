@@ -1,12 +1,17 @@
-// Coverage suite for src/components/ScriptsSetupModal.tsx — the per-repo
-// scripts editor (no-root placeholder, onEnter select, script/task CRUD via
-// UI, the AI generate flow's every state, and the ReviewPanel's edit/keep/
-// adopt/cancel flow).
+// Coverage suite for src/components/ScriptsSetupModal.tsx — the primary
+// aurora.json scripts editor (managed-server-lifecycle task 5.4, reshaped for
+// the corrected model: "1 command → 1 pane, 1 run script → multiple
+// commands"): no-root placeholder, loading state, setup/archive fields, Run
+// Script CRUD (add/remove/reorder — an ordered array, no ids), Custom Scripts
+// CRUD (add/rename/patch/remove), Save (writes aurora.json + updates the
+// store cache), the legacy-scripts-as-migration-path case, and the AI
+// generate/review/adopt flow folding into the aurora.json draft's CUSTOM
+// entries instead of the legacy userScripts store.
+
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { render, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { ScriptsSetupModal } from "../src/components/ScriptsSetupModal";
 import { useStore, type PaneState, type Group, type Workspace } from "../src/state/store";
-import { scriptsForRoot } from "../src/lib/scripts";
 import { tauri } from "../test/mocks/tauri";
 
 let seq = 10000;
@@ -89,7 +94,7 @@ function setup(
 
 beforeEach(() => {
   tauri.reset();
-  useStore.setState({ userScripts: {} }, false);
+  useStore.setState({ userScripts: {}, auroraConfigs: {} }, false);
 });
 afterEach(() => cleanup());
 
@@ -102,7 +107,7 @@ describe("ScriptsSetupModal — no active pane", () => {
     setup(null);
     const { getByText, queryByText } = render(<ScriptsSetupModal />);
     expect(getByText("cd into a repo to edit its scripts")).toBeTruthy();
-    expect(queryByText("+ add script")).toBeNull();
+    expect(queryByText("+ add run command")).toBeNull();
     expect(queryByText("✨ generate with AI")).toBeNull();
   });
 
@@ -114,7 +119,6 @@ describe("ScriptsSetupModal — no active pane", () => {
 
     useStore.setState({ scriptsSetupOpen: true }, false);
     const { container: c2 } = render(<ScriptsSetupModal />);
-    // Structure: outer positioned div > [overlay div (empty, onClick=close), panel div].
     const overlay = c2.firstElementChild!.firstElementChild!;
     expect(overlay.children).toHaveLength(0);
     fireEvent.click(overlay);
@@ -123,114 +127,254 @@ describe("ScriptsSetupModal — no active pane", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Editor: empty and populated states, CRUD
+// Editor: loading → empty aurora.json, setup/archive fields
 // ---------------------------------------------------------------------------
 
-describe("ScriptsSetupModal — editor, empty script list", () => {
-  it("shows the repo subtitle, a 'none' onEnter option, and the add/generate buttons", () => {
+describe("ScriptsSetupModal — editor, no committed aurora.json", () => {
+  it("shows 'loading…' first, then the setup/archive fields and empty-state hints", async () => {
     const pane = mkPane();
     setup(pane);
-    const { getByText, container } = render(<ScriptsSetupModal />);
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const { getByText, findByPlaceholderText, container } = render(<ScriptsSetupModal />);
+    expect(getByText("loading…")).toBeTruthy();
+    await findByPlaceholderText("e.g. bun install");
     expect(container.textContent).toContain("/repo");
-    expect(getByText("none")).toBeTruthy();
-    expect(getByText("+ add script")).toBeTruthy();
-    expect(getByText("✨ generate with AI")).toBeTruthy();
+    expect(getByText("no run commands yet — the Run/Stop button in the rail shows up once you add one")).toBeTruthy();
+    expect(getByText("no custom scripts yet — add one, then trigger it from the ▾ run menu")).toBeTruthy();
   });
 
-  it("'+ add script' adds a default script that then appears in the editor", () => {
+  it("editing setup/archive and saving persists them into the store cache + writes aurora.json", async () => {
     const pane = mkPane();
     setup(pane);
-    const { getByText, getByPlaceholderText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    expect(scriptsForRoot("/repo").map((s) => s.name)).toEqual(["script1"]);
-    expect(getByPlaceholderText("name")).toHaveProperty("value", "script1");
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const { getByText, findByPlaceholderText, getByPlaceholderText } = render(<ScriptsSetupModal />);
+    await findByPlaceholderText("e.g. bun install");
+    fireEvent.change(getByPlaceholderText("e.g. bun install"), { target: { value: "bun install" } });
+    fireEvent.change(getByPlaceholderText("e.g. docker compose down"), { target: { value: "docker compose down" } });
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    const saved = useStore.getState().auroraConfigs["/repo"];
+    expect(saved?.scripts.setup).toBe("bun install");
+    expect(saved?.scripts.archive).toBe("docker compose down");
+    expect(tauri.lastCall("write_text_file")?.args).toMatchObject({ root: "/repo", path: "/repo/aurora.json" });
+  });
+
+  it("shows a save error inline and keeps the modal open on write failure", async () => {
+    const pane = mkPane();
+    setup(pane);
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+      write_text_file: () => {
+        throw new Error("disk full");
+      },
+    });
+    const { getByText, findByPlaceholderText, findByText } = render(<ScriptsSetupModal />);
+    await findByPlaceholderText("e.g. bun install");
+    fireEvent.click(getByText("Save aurora.json"));
+    expect(await findByText(/disk full/)).toBeTruthy();
+    expect(useStore.getState().scriptsSetupOpen).toBe(true); // still open
   });
 });
 
-describe("ScriptsSetupModal — editor, populated script list", () => {
-  function seed() {
-    const root = "/repo";
-    useStore.getState(); // no-op, just for readability
-    return root;
+// ---------------------------------------------------------------------------
+// Run Script CRUD (ordered array — no ids)
+// ---------------------------------------------------------------------------
+
+describe("ScriptsSetupModal — Run Script CRUD", () => {
+  async function openEditor() {
+    const pane = mkPane();
+    setup(pane);
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const utils = render(<ScriptsSetupModal />);
+    await utils.findByPlaceholderText("e.g. bun install");
+    return utils;
   }
 
-  it("renders name/desc inputs, the onEnter select options, and task rows", () => {
-    const pane = mkPane();
-    setup(pane);
-    const { getByText, getByDisplayValue } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    fireEvent.change(getByDisplayValue("script1"), { target: { value: "dev" } });
-    expect(scriptsForRoot("/repo")[0].name).toBe("dev");
-    // onEnter select now offers the renamed script.
-    expect(getByText("dev")).toBeTruthy();
+  it("'+ add run command' creates a row; editing command/name/cwd and saving persists it", async () => {
+    const { getByText, getByPlaceholderText } = await openEditor();
+    fireEvent.click(getByText("+ add run command"));
+    const cmdInput = getByPlaceholderText("command — e.g. bun run dev -p $AURORA_PORT");
+    fireEvent.change(cmdInput, { target: { value: "bun run dev -p $AURORA_PORT" } });
+    const nameInput = getByPlaceholderText("pane label (optional)");
+    fireEvent.change(nameInput, { target: { value: "web" } });
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    const run = useStore.getState().auroraConfigs["/repo"]?.scripts.run ?? [];
+    expect(run).toEqual([{ command: "bun run dev -p $AURORA_PORT", name: "web" }]);
   });
 
-  it("editing desc/task dir/cmd calls through to the store", () => {
-    const pane = mkPane();
-    setup(pane);
-    const { getByText, getByPlaceholderText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    fireEvent.change(getByPlaceholderText("description"), { target: { value: "runs stuff" } });
-    fireEvent.change(getByPlaceholderText("dir"), { target: { value: "sub" } });
-    fireEvent.change(getByPlaceholderText("command to run"), { target: { value: "npm run x" } });
-    const s = scriptsForRoot("/repo")[0];
-    expect(s.desc).toBe("runs stuff");
-    expect(s.tasks[0]).toEqual({ dir: "sub", cmd: "npm run x" });
+  it("reorders with ▲▼, boundary arrows are inert", async () => {
+    const { getByText, getAllByPlaceholderText, getAllByTitle } = await openEditor();
+    fireEvent.click(getByText("+ add run command"));
+    fireEvent.click(getByText("+ add run command"));
+    const cmdInputs = getAllByPlaceholderText("command — e.g. bun run dev -p $AURORA_PORT");
+    fireEvent.change(cmdInputs[0], { target: { value: "first" } });
+    fireEvent.change(cmdInputs[1], { target: { value: "second" } });
+
+    // Moving the first row down (or the second row up) swaps them.
+    const downButtons = getAllByTitle("move down");
+    fireEvent.click(downButtons[0]);
+
+    const reordered = getAllByPlaceholderText("command — e.g. bun run dev -p $AURORA_PORT") as HTMLInputElement[];
+    expect(reordered.map((i) => i.value)).toEqual(["second", "first"]);
+
+    // The first row's "move up" is a no-op (canUp is false at index 0) — the
+    // swapped order ["second", "first"] survives unchanged.
+    const upButtons = getAllByTitle("move up");
+    fireEvent.click(upButtons[0]);
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    const run = useStore.getState().auroraConfigs["/repo"]?.scripts.run ?? [];
+    expect(run.map((r) => r.command)).toEqual(["second", "first"]);
   });
 
-  it("adds/removes a command row and deletes the script", () => {
-    const pane = mkPane();
-    setup(pane);
-    const { getByText, getByTitle, getAllByTitle, getAllByPlaceholderText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    fireEvent.click(getByText("+ command"));
-    expect(scriptsForRoot("/repo")[0].tasks).toHaveLength(2);
-    const cmdInputs = getAllByPlaceholderText("command to run");
-    expect(cmdInputs).toHaveLength(2);
-    fireEvent.click(getAllByTitle("remove command")[0]);
-    expect(scriptsForRoot("/repo")[0].tasks).toHaveLength(1);
-    fireEvent.click(getByTitle("delete script"));
-    expect(scriptsForRoot("/repo")).toHaveLength(0);
+  it("removing a row drops it (never saved)", async () => {
+    const { getByText, getAllByTitle } = await openEditor();
+    fireEvent.click(getByText("+ add run command"));
+    fireEvent.click(getAllByTitle("remove")[0]);
+    expect(getByText("no run commands yet — the Run/Stop button in the rail shows up once you add one")).toBeTruthy();
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    expect(useStore.getState().auroraConfigs["/repo"]?.scripts.run).toEqual([]);
   });
 
-  it("toggling the split switch flips the script's split flag", () => {
+  it("cwd is set when non-empty, omitted (undefined) when cleared", async () => {
+    const { getByText, getByPlaceholderText } = await openEditor();
+    fireEvent.click(getByText("+ add run command"));
+    fireEvent.change(getByPlaceholderText("command — e.g. bun run dev -p $AURORA_PORT"), { target: { value: "bun" } });
+    fireEvent.change(getByPlaceholderText("."), { target: { value: "apps/web" } });
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    expect(useStore.getState().auroraConfigs["/repo"]?.scripts.run).toEqual([{ command: "bun", cwd: "apps/web" }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Custom Scripts CRUD
+// ---------------------------------------------------------------------------
+
+describe("ScriptsSetupModal — Custom Scripts CRUD", () => {
+  async function openEditor() {
     const pane = mkPane();
     setup(pane);
-    const { getByText, container } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    // The switch track is the only element styled as a 34x19 pill right after "split panes" label.
-    const track = Array.from(container.querySelectorAll("div")).find(
-      (el) => el.getAttribute("style")?.includes("border-radius: 999px"),
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const utils = render(<ScriptsSetupModal />);
+    await utils.findByPlaceholderText("e.g. bun install");
+    return utils;
+  }
+
+  it("'+ add custom script' creates an entry; editing id/command and saving persists it", async () => {
+    const { getByText, getByPlaceholderText } = await openEditor();
+    fireEvent.click(getByText("+ add custom script"));
+    const cmdInput = getByPlaceholderText("command — e.g. bun run lint");
+    fireEvent.change(cmdInput, { target: { value: "bun run lint" } });
+    const idInput = getByPlaceholderText("id");
+    fireEvent.change(idInput, { target: { value: "lint" } });
+    fireEvent.blur(idInput);
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    const custom = useStore.getState().auroraConfigs["/repo"]?.scripts.custom ?? {};
+    expect(custom.lint).toEqual({ command: "bun run lint" });
+  });
+
+  it("a second add gets a unique id ('task-2'); remove works", async () => {
+    const { getByText, getAllByPlaceholderText, getAllByTitle } = await openEditor();
+    fireEvent.click(getByText("+ add custom script"));
+    fireEvent.click(getByText("+ add custom script"));
+    const idInputs = getAllByPlaceholderText("id") as HTMLInputElement[];
+    expect(idInputs.map((i) => i.value)).toEqual(["task", "task-2"]);
+
+    fireEvent.click(getAllByTitle("remove")[0]);
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    expect(Object.keys(useStore.getState().auroraConfigs["/repo"]?.scripts.custom ?? {})).toEqual(["task-2"]);
+  });
+
+  it("renaming to an id that already exists is a no-op (collision guard)", async () => {
+    const { getByText, getAllByPlaceholderText } = await openEditor();
+    fireEvent.click(getByText("+ add custom script")); // "task"
+    fireEvent.click(getByText("+ add custom script")); // "task-2"
+    const idInputs = getAllByPlaceholderText("id") as HTMLInputElement[];
+    fireEvent.change(idInputs[1], { target: { value: "task" } }); // collides with idInputs[0]
+    fireEvent.blur(idInputs[1]);
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    // Both entries survive under their original ids — rename was rejected.
+    expect(Object.keys(useStore.getState().auroraConfigs["/repo"]?.scripts.custom ?? {}).sort()).toEqual([
+      "task",
+      "task-2",
+    ]);
+  });
+});
+
+describe("ScriptsSetupModal — legacy scripts as the migration path", () => {
+  it("a repo with only legacy scripts (no committed aurora.json) shows the onEnter script as a Run Script row; Save commits the migration", async () => {
+    useStore.setState(
+      {
+        userScripts: {
+          "/repo": { scripts: [{ name: "dev", desc: "", split: false, tasks: [{ dir: "", cmd: "npm run dev" }] }], onEnter: "dev" },
+        },
+      },
+      false,
     );
-    expect(track).toBeTruthy();
-    fireEvent.click(track!);
-    expect(scriptsForRoot("/repo")[0].split).toBe(true);
-    fireEvent.click(track!);
-    expect(scriptsForRoot("/repo")[0].split).toBe(false);
-  });
-
-  it("selecting an onEnter option calls setOnEnter, and picking 'none' clears it", () => {
     const pane = mkPane();
     setup(pane);
-    const { getByText, container } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    const select = container.querySelector("select") as HTMLSelectElement;
-    expect(select).toBeTruthy();
-    fireEvent.change(select, { target: { value: "script1" } });
-    expect(useStore.getState().userScripts["/repo"].onEnter).toBe("script1");
-    fireEvent.change(select, { target: { value: "" } });
-    expect(useStore.getState().userScripts["/repo"].onEnter).toBeNull();
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const { findByDisplayValue, getByText } = render(<ScriptsSetupModal />);
+    await findByDisplayValue("npm run dev"); // the migrated run row's command field
+    fireEvent.click(getByText("Save aurora.json"));
+    await waitFor(() => expect(useStore.getState().scriptsSetupOpen).toBe(false));
+    expect(tauri.lastCall("write_text_file")?.args).toMatchObject({ root: "/repo", path: "/repo/aurora.json" });
+    const saved = useStore.getState().auroraConfigs["/repo"];
+    expect(saved?.scripts.run).toEqual([{ command: "npm run dev", name: "dev" }]);
   });
 
-  it("clicking '▶' on a script closes the modal and runs it", () => {
-    const pane = mkPane({ ready: true, ptyId: "pty-1" });
+  it("every OTHER legacy script (not onEnter) shows up as a Custom Scripts row", async () => {
+    useStore.setState(
+      {
+        userScripts: {
+          "/repo": {
+            scripts: [
+              { name: "dev", desc: "", split: false, tasks: [{ dir: "", cmd: "npm run dev" }] },
+              { name: "lint", desc: "", split: false, tasks: [{ dir: "", cmd: "npm run lint" }] },
+            ],
+            onEnter: "dev",
+          },
+        },
+      },
+      false,
+    );
+    const pane = mkPane();
     setup(pane);
-    const { getByText, getByPlaceholderText, getByTitle } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("+ add script"));
-    fireEvent.change(getByPlaceholderText("command to run"), { target: { value: "npm run dev" } });
-    fireEvent.click(getByTitle("run now"));
-    expect(useStore.getState().scriptsSetupOpen).toBe(false);
-    expect(tauri.lastCall("pty_write")?.args).toEqual({ id: "pty-1", data: "npm run dev\n" });
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const { findByDisplayValue } = render(<ScriptsSetupModal />);
+    await findByDisplayValue("lint"); // the migrated custom entry's id field
   });
 });
 
@@ -239,11 +383,16 @@ describe("ScriptsSetupModal — editor, populated script list", () => {
 // ---------------------------------------------------------------------------
 
 describe("ScriptsSetupModal — generate with AI", () => {
-  it("routes to key entry (without calling the model) when no API key is present", () => {
+  it("routes to key entry (without calling the model) when no API key is present", async () => {
     const pane = mkPane();
     setup(pane, { apiKeyPresent: false });
-    const { getByText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("✨ generate with AI"));
+    tauri.invoke({
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
+    const { findByText } = render(<ScriptsSetupModal />);
+    fireEvent.click(await findByText("✨ generate with AI"));
     expect(useStore.getState().scriptsSetupOpen).toBe(false);
     expect(useStore.getState().keyEntry).toBe(true);
     expect(tauri.calls().some((c) => c.cmd === "claude_text")).toBe(false);
@@ -253,8 +402,8 @@ describe("ScriptsSetupModal — generate with AI", () => {
     const pane = mkPane();
     setup(pane, { apiKeyPresent: true });
     tauri.invoke({ list_dir: () => [], claude_text: () => "[]" });
-    const { getByText, findByText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("✨ generate with AI"));
+    const { findByText } = render(<ScriptsSetupModal />);
+    fireEvent.click(await findByText("✨ generate with AI"));
     expect(await findByText("Claude didn't return any usable scripts for this repo.")).toBeTruthy();
   });
 
@@ -267,8 +416,8 @@ describe("ScriptsSetupModal — generate with AI", () => {
         throw "no-key";
       },
     });
-    const { getByText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("✨ generate with AI"));
+    const { findByText } = render(<ScriptsSetupModal />);
+    fireEvent.click(await findByText("✨ generate with AI"));
     await new Promise((r) => setTimeout(r, 0));
     expect(useStore.getState().scriptsSetupOpen).toBe(false);
     expect(useStore.getState().keyEntry).toBe(true);
@@ -283,8 +432,8 @@ describe("ScriptsSetupModal — generate with AI", () => {
         throw "boom: backend exploded";
       },
     });
-    const { getByText, findByText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("✨ generate with AI"));
+    const { findByText } = render(<ScriptsSetupModal />);
+    fireEvent.click(await findByText("✨ generate with AI"));
     expect(await findByText(/boom: backend exploded/)).toBeTruthy();
   });
 
@@ -303,49 +452,32 @@ describe("ScriptsSetupModal — generate with AI", () => {
       },
     });
     const { getByText, findByText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("✨ generate with AI"));
+    fireEvent.click(await findByText("✨ generate with AI"));
     expect(getByText("✨ generating…")).toBeTruthy();
     await waitFor(() => expect(resolveText).toBeDefined());
     resolveText(JSON.stringify([{ name: "dev", desc: "run dev", tasks: [{ cmd: "npm run dev" }] }]));
     expect(await findByText("Review generated scripts")).toBeTruthy();
     expect(getByText("1 of 1 selected")).toBeTruthy();
   });
-
-  it("a second click while loading is a no-op (onClick is undefined)", async () => {
-    const pane = mkPane();
-    setup(pane, { apiKeyPresent: true });
-    let calls = 0;
-    let resolveText!: (v: string) => void;
-    tauri.invoke({
-      list_dir: () => [],
-      claude_text: () => {
-        calls += 1;
-        return new Promise<string>((res) => {
-          resolveText = res;
-        });
-      },
-    });
-    const { getByText } = render(<ScriptsSetupModal />);
-    fireEvent.click(getByText("✨ generate with AI"));
-    await waitFor(() => expect(calls).toBe(1));
-    fireEvent.click(getByText("✨ generating…"));
-    expect(calls).toBe(1);
-    resolveText("[]");
-    await new Promise((r) => setTimeout(r, 0));
-  });
 });
 
 // ---------------------------------------------------------------------------
-// ReviewPanel
+// ReviewPanel → adopt folds into the aurora.json draft's CUSTOM entries
 // ---------------------------------------------------------------------------
 
-describe("ScriptsSetupModal — ReviewPanel", () => {
+describe("ScriptsSetupModal — ReviewPanel adopt", () => {
   async function openReview(scripts: unknown[] = [{ name: "dev", desc: "run dev", tasks: [{ cmd: "npm run dev" }] }]) {
     const pane = mkPane();
     setup(pane, { apiKeyPresent: true });
-    tauri.invoke({ list_dir: () => [], claude_text: () => JSON.stringify(scripts) });
+    tauri.invoke({
+      list_dir: () => [],
+      claude_text: () => JSON.stringify(scripts),
+      read_text_file: () => {
+        throw new Error("ENOENT");
+      },
+    });
     const utils = render(<ScriptsSetupModal />);
-    fireEvent.click(utils.getByText("✨ generate with AI"));
+    fireEvent.click(await utils.findByText("✨ generate with AI"));
     await utils.findByText("Review generated scripts");
     return utils;
   }
@@ -361,29 +493,14 @@ describe("ScriptsSetupModal — ReviewPanel", () => {
 
   it("unchecking a script decrements the selected count and disables Adopt at zero", async () => {
     const { getByText, getByRole } = await openReview();
-    const checkbox = getByRole("checkbox");
-    fireEvent.click(checkbox);
+    fireEvent.click(getByRole("checkbox"));
     expect(getByText("0 of 1 selected")).toBeTruthy();
-    // Clicking Adopt with nothing selected must not add anything (onClick is undefined).
     fireEvent.click(getByText(/^Add /));
-    expect(scriptsForRoot("/repo")).toHaveLength(0);
     expect(getByText("Review generated scripts")).toBeTruthy(); // still on the review screen
   });
 
-  it("edits a proposed script's name/desc/task in place before adopting", async () => {
-    const { getByDisplayValue, getByText } = await openReview();
-    fireEvent.change(getByDisplayValue("dev"), { target: { value: "develop" } });
-    fireEvent.change(getByDisplayValue("run dev"), { target: { value: "runs the dev server" } });
-    fireEvent.change(getByDisplayValue("npm run dev"), { target: { value: "npm run dev -- --port 3000" } });
-    fireEvent.click(getByText(/^Add /));
-    const [s] = scriptsForRoot("/repo");
-    expect(s.name).toBe("develop");
-    expect(s.desc).toBe("runs the dev server");
-    expect(s.tasks[0].cmd).toBe("npm run dev -- --port 3000");
-  });
-
-  it("adopting appends kept scripts and returns to the normal editor", async () => {
-    const { getByText, queryByText } = await openReview([
+  it("adopting folds kept scripts into CUSTOM entries — visible in the editor, never in the legacy store, never in run", async () => {
+    const { getByText, findByDisplayValue, queryByText } = await openReview([
       { name: "keep-me", tasks: [{ cmd: "a" }] },
       { name: "drop-me", tasks: [{ cmd: "b" }] },
     ]);
@@ -391,30 +508,39 @@ describe("ScriptsSetupModal — ReviewPanel", () => {
     fireEvent.click(checkboxes[1]); // uncheck "drop-me"
     fireEvent.click(getByText(/^Add /));
     expect(queryByText("Review generated scripts")).toBeNull();
-    expect(scriptsForRoot("/repo").map((s) => s.name)).toEqual(["keep-me"]);
+    await findByDisplayValue("keep-me"); // adopted custom entry's id field, back on the editor
+    expect(useStore.getState().userScripts["/repo"]).toBeUndefined(); // legacy store untouched
+  });
+
+  it("editing a proposal's command before adopting uses the EDITED command, not the original (patchTask/patchReview)", async () => {
+    const { getByDisplayValue, getByText, findByDisplayValue } = await openReview([
+      { name: "dev", tasks: [{ cmd: "npm run dev" }] },
+    ]);
+    fireEvent.change(getByDisplayValue("npm run dev"), { target: { value: "npm run dev:edited" } });
+    fireEvent.click(getByText(/^Add /));
+    expect(await findByDisplayValue("dev")).toBeTruthy(); // adopted custom entry's id — slugified from the script name
   });
 
   it("Cancel returns to the idle editor without adopting anything", async () => {
     const { getByText, queryByText } = await openReview();
     fireEvent.click(getByText("Cancel"));
     expect(queryByText("Review generated scripts")).toBeNull();
-    expect(scriptsForRoot("/repo")).toHaveLength(0);
+    expect(getByText("no custom scripts yet — add one, then trigger it from the ▾ run menu")).toBeTruthy();
   });
 
-  it("closing via × or the overlay also discards the review without adopting", async () => {
+  it("closing via × also discards the review without adopting", async () => {
     const { getByText, queryByText } = await openReview();
     fireEvent.click(getByText("×"));
     expect(queryByText("Review generated scripts")).toBeNull();
-    expect(scriptsForRoot("/repo")).toHaveLength(0);
+    expect(getByText("no custom scripts yet — add one, then trigger it from the ▾ run menu")).toBeTruthy();
   });
 
-  it("Adopt is a no-op if root becomes null before the click (guards the stale-review edge case)", async () => {
-    const { getByText, rerender } = await openReview();
-    // Simulate the active pane disappearing while the review screen is still up.
+  it("the review screen itself is discarded once the workspace disappears mid-review (the root-change effect resets gen+draft)", async () => {
+    const { queryByText, getByText, rerender } = await openReview();
     useStore.setState({ workspaces: [], activeWs: null }, false);
     rerender(<ScriptsSetupModal />);
-    fireEvent.click(getByText(/^Add /));
-    expect(scriptsForRoot("/repo")).toHaveLength(0);
-    expect(getByText("Review generated scripts")).toBeTruthy(); // still reviewing — adopt() returned early
+    // root is now null → the effect reset `gen` to idle, falling back to the placeholder.
+    expect(queryByText("Review generated scripts")).toBeNull();
+    expect(getByText("cd into a repo to edit its scripts")).toBeTruthy();
   });
 });

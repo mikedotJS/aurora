@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 import { tauri } from "../test/mocks/tauri";
 import { useStore, type Workspace, type Group, type PaneState } from "../src/state/store";
-import { deleteWorkspace } from "../src/lib/teardown";
+import { deleteWorkspace, runArchiveScript } from "../src/lib/teardown";
 
 let paneIdSeq = 700000;
 
@@ -80,6 +80,12 @@ function resetStore(patch: Partial<ReturnType<typeof useStore.getState>> = {}) {
       repos: [],
       workspaces: [],
       activeWs: null,
+      // Reset the per-repo aurora.json cache + managed-server registry every
+      // test — otherwise a config/entry seeded by one test's mocks leaks into
+      // the next (ensureAuroraConfigLoaded caches by root and only re-reads
+      // `read_text_file` when the store cache is empty).
+      auroraConfigs: {},
+      managedServers: {},
       ...patch,
     } as Partial<ReturnType<typeof useStore.getState>>,
     false,
@@ -96,6 +102,10 @@ beforeEach(() => {
       { path: WT_DIR, branch: "feat/x", head: null },
     ],
     path_resolve: (a) => a.path as string,
+    // Default: no committed aurora.json → default config (no setup/archive).
+    read_text_file: () => {
+      throw new Error("ENOENT");
+    },
   });
 });
 
@@ -105,6 +115,39 @@ describe("guard: workspace not found", () => {
     const r = await deleteWorkspace("missing");
     expect(r).toEqual({ ok: false, error: "workspace not found" });
     expect(tauri.calls().length).toBe(0);
+  });
+});
+
+describe("guard: Home terminal (kind === 'home')", () => {
+  // Ported from the retired __tests__/teardown.test.ts (hand-mocked style,
+  // superseded by this real-store suite — see that file's own docblock). Its
+  // narrow module mocks (a `useStore` shim with only `workspaces`/
+  // `removeWorkspace`, and a `sys` mock with only `pathResolve`) can no longer
+  // satisfy `deleteWorkspace`'s new dependencies (managed-server-lifecycle:
+  // `stopServers` reads `managedServers`, `runArchiveScript` reads
+  // `auroraConfigs`/calls real `sys.readTextFile`/`writeTextFile` transitively
+  // via lib/auroraConfig.ts) — rather than hand-patch that shim to also fake
+  // those, this guard (the one scenario that file covered and this one
+  // didn't) is ported here onto the real store, and the old file is deleted.
+  it("refuses with an error message matching /home/i, even with other workspaces present, before any side effect", async () => {
+    resetStore({
+      workspaces: [mkWs({ id: "home", kind: "home" as Workspace["kind"], repoId: null, dir: "/Users/tester" }), mkWs({ id: "other" })],
+      activeWs: "home",
+    });
+    const r = await deleteWorkspace("home");
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; error: string }).error).toMatch(/home/i);
+    expect(tauri.calls().length).toBe(0);
+  });
+
+  it("refuses Home even when it is the only workspace (would otherwise also trip the last-workspace guard)", async () => {
+    resetStore({
+      workspaces: [mkWs({ id: "home", kind: "home" as Workspace["kind"], repoId: null, dir: "/Users/tester" })],
+      activeWs: "home",
+    });
+    const r = await deleteWorkspace("home");
+    expect(r.ok).toBe(false);
+    expect((r as { ok: false; error: string }).error).toMatch(/home/i);
   });
 });
 
@@ -247,5 +290,150 @@ describe("happy path: worktree-backed workspace", () => {
     const state = useStore.getState();
     expect(state.workspaces.map((w) => w.id)).toEqual(["other"]);
     expect(state.activeWs).toBe("other"); // re-pointed off the removed workspace
+  });
+});
+
+// ── scripts.archive (task 4.5) ───────────────────────────────────────────────
+
+describe("scripts.archive: runs before worktree removal", () => {
+  it("spawns the configured archive command in the workspace's dir/env, waits for it to exit, then proceeds to worktree_remove", async () => {
+    const order: string[] = [];
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], archive: "bun run clean" } }),
+      server_spawn: (a) => {
+        order.push(`spawn:${a.id}`);
+        expect(a.command).toBe("bun run clean");
+        expect(a.args).toEqual([]);
+        expect(a.cwd).toBe(WT_DIR);
+        expect(a.env).toEqual([["FOO", "bar"]]);
+        return { pid: 1, pgid: 1, ptyId: "archive-pty" };
+      },
+      server_status: () => ({ state: "exited", code: 0 }),
+      worktree_remove: () => {
+        order.push("worktreeRemove");
+        return undefined;
+      },
+    });
+    resetStore({ workspaces: [mkWs({ id: "arch", env: { FOO: "bar" } }), mkWs({ id: "other" })], activeWs: "arch" });
+    const r = await deleteWorkspace("arch");
+    expect(r).toEqual({ ok: true });
+    expect(order).toEqual(["spawn:archive:arch", "worktreeRemove"]);
+  });
+
+  it("no scripts.archive configured → server_spawn is never called, teardown proceeds normally", async () => {
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], archive: null } }),
+    });
+    resetStore({ workspaces: [mkWs({ id: "noarch" }), mkWs({ id: "other" })], activeWs: "noarch" });
+    const r = await deleteWorkspace("noarch");
+    expect(r).toEqual({ ok: true });
+    expect(tauri.calls().some((c) => c.cmd === "server_spawn")).toBe(false);
+  });
+
+  it("a failing spawn is logged, never fails or blocks teardown (best-effort)", async () => {
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], archive: "bun run clean" } }),
+      server_spawn: () => {
+        throw new Error("spawn exploded");
+      },
+    });
+    resetStore({ workspaces: [mkWs({ id: "boom" }), mkWs({ id: "other" })], activeWs: "boom" });
+    const r = await deleteWorkspace("boom");
+    expect(r).toEqual({ ok: true });
+    expect(tauri.calls().some((c) => c.cmd === "worktree_remove")).toBe(true);
+  });
+
+  it("manual lane (repoId == null) never attempts an archive script", async () => {
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], archive: "bun run clean" } }),
+    });
+    resetStore({
+      workspaces: [mkWs({ id: "manual2", repoId: null, dir: "/manual/path2" }), mkWs({ id: "other" })],
+      activeWs: "manual2",
+    });
+    const r = await deleteWorkspace("manual2");
+    expect(r).toEqual({ ok: true });
+    expect(tauri.calls().some((c) => c.cmd === "server_spawn")).toBe(false);
+  });
+});
+
+describe("runArchiveScript: bounded timeout", () => {
+  it("SIGKILLs (server_stop) a hanging archive script once the timeout elapses, and never throws", async () => {
+    let stoppedId: string | null = null;
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], archive: "sleep 999" } }),
+      server_status: () => ({ state: "running" }), // never exits on its own
+      server_stop: (a) => {
+        stoppedId = a.id as string;
+        return undefined;
+      },
+    });
+    resetStore();
+    const ws = mkWs({ id: "hang" });
+    await runArchiveScript(ws, { timeoutMs: 50, pollMs: 10 });
+    expect(stoppedId).toBe("archive:hang");
+  });
+
+  // Regression (review finding #4): the happy path (archive script exits on
+  // its own, before the timeout) used to `return` without ever calling
+  // server_stop — leaking the Rust-side registry entry for every normal
+  // archive run; only the timeout branch above reaped. Both branches must
+  // reap now.
+  it("reaps the Rust registry entry (server_stop) on the happy path too, when the script exits on its own", async () => {
+    let stoppedId: string | null = null;
+    tauri.invoke({
+      read_text_file: () =>
+        JSON.stringify({ version: 1, scripts: { setup: null, run: [], archive: "bun run clean" } }),
+      server_status: () => ({ state: "exited", code: 0 }),
+      server_stop: (a) => {
+        stoppedId = a.id as string;
+        return undefined;
+      },
+    });
+    resetStore();
+    const ws = mkWs({ id: "done" });
+    await runArchiveScript(ws, { timeoutMs: 5000, pollMs: 10 });
+    expect(stoppedId).toBe("archive:done"); // reaped even though it exited well before the timeout
+  });
+});
+
+// ── managed servers reclaimed on teardown (task 3.3 leak fix) ───────────────
+
+describe("managed servers: stopped before the worktree is removed", () => {
+  it("stops a workspace's tracked managed server (real server_stop + store cleanup) before worktree_remove", async () => {
+    const order: string[] = [];
+    tauri.invoke({
+      server_stop: (a) => {
+        order.push(`stop:${a.id}`);
+        return undefined;
+      },
+      worktree_remove: () => {
+        order.push("worktreeRemove");
+        return undefined;
+      },
+    });
+    resetStore({
+      workspaces: [mkWs({ id: "srvws" }), mkWs({ id: "other" })],
+      activeWs: "srvws",
+      managedServers: {
+        "srvws:web": { wsId: "srvws", scriptId: "web", paneId: 999999, status: "running", exitCode: null, ports: [3000] },
+      },
+    });
+    const r = await deleteWorkspace("srvws");
+    expect(r).toEqual({ ok: true });
+    expect(order).toEqual(["stop:srvws:web", "worktreeRemove"]);
+    expect(useStore.getState().managedServers["srvws:web"]).toBeUndefined();
+  });
+
+  it("a workspace with no managed servers tears down without any server_stop call", async () => {
+    resetStore({ workspaces: [mkWs({ id: "clean" }), mkWs({ id: "other" })], activeWs: "clean" });
+    const r = await deleteWorkspace("clean");
+    expect(r).toEqual({ ok: true });
+    expect(tauri.calls().some((c) => c.cmd === "server_stop")).toBe(false);
   });
 });

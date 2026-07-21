@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useStore, activePane } from "../state/store";
 import { scriptsForRoot, runScript } from "../lib/scripts";
 import { shortenCwd } from "../lib/sys";
+import { ensureAuroraConfigLoaded, isUnmigrated, acceptAuroraMigration } from "../lib/auroraConfigStore";
 
 export function ScriptsSheet() {
   const closePanel = useStore((s) => s.closePanel);
@@ -18,6 +19,37 @@ export function ScriptsSheet() {
   const list = scriptsForRoot(root);
 
   const [sel, setSel] = useState(0);
+
+  // managed-server-lifecycle (task 6.2): offer to save these localStorage
+  // scripts as a committed, team-shareable aurora.json — never automatic,
+  // never overwrites an existing committed file (isUnmigrated is only true
+  // when none exists yet).
+  const [migration, setMigration] = useState<{ show: boolean; busy: boolean; error: string | null }>({
+    show: false,
+    busy: false,
+    error: null,
+  });
+  useEffect(() => {
+    setMigration({ show: false, busy: false, error: null });
+    if (!root) return;
+    let cancelled = false;
+    ensureAuroraConfigLoaded(root).then(() => {
+      if (!cancelled) setMigration((m) => ({ ...m, show: isUnmigrated(root) }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [root]);
+  const onAcceptMigration = async () => {
+    if (!root) return;
+    setMigration((m) => ({ ...m, busy: true, error: null }));
+    try {
+      await acceptAuroraMigration(root);
+      setMigration({ show: false, busy: false, error: null });
+    } catch (e) {
+      setMigration((m) => ({ ...m, busy: false, error: e instanceof Error ? e.message : String(e) }));
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -58,6 +90,41 @@ export function ScriptsSheet() {
           ✎ edit scripts
         </span>
       </div>
+      {migration.show && (
+        <div
+          style={{
+            margin: "0 15px 10px",
+            padding: "9px 11px",
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            border: "1px solid color-mix(in oklab, var(--ac) 30%, var(--line))",
+            borderRadius: 8,
+            background: "color-mix(in oklab, var(--ac) 8%, transparent)",
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0, fontFamily: "var(--sans)", fontSize: 11.5, color: "var(--dim)", lineHeight: 1.4 }}>
+            These scripts are saved locally only. Save them as <code>aurora.json</code> to share with your team?
+            {migration.error && <div style={{ color: "var(--err)", marginTop: 3 }}>{migration.error}</div>}
+          </div>
+          <span
+            onClick={migration.busy ? undefined : onAcceptMigration}
+            style={{
+              flex: "0 0 auto",
+              cursor: migration.busy ? "default" : "pointer",
+              opacity: migration.busy ? 0.6 : 1,
+              fontFamily: "var(--sans)",
+              fontSize: 11,
+              color: "var(--acd)",
+              border: "1px solid var(--line)",
+              borderRadius: 6,
+              padding: "3px 9px",
+            }}
+          >
+            {migration.busy ? "Saving…" : "Save as aurora.json"}
+          </span>
+        </div>
+      )}
       {root && list.length === 0 && <Empty>no scripts here yet — “✎ edit scripts” to add one</Empty>}
       {list.map((s, i) => (
         <div

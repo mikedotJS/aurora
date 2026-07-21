@@ -15,8 +15,8 @@ import { ensurePtyPoll, paneRunning } from "./running";
 import { loadDirFrecency, topDirs } from "./dirFrecency";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { addRepoFromFolder } from "./repo";
-import { portScripts } from "./ports";
-import { runServers, stopServers, serversUp, repoLabel } from "./servers";
+import { runServers, stopServers, serversUp, runCommands, repoLabel } from "./servers";
+import { ensureAuroraConfigLoaded } from "./auroraConfigStore";
 
 /** Entries offered per `cd `-prefix popover; also caps the ⌥1..9 direct-accept range. */
 const CD_SUGGEST_LIMIT = 9;
@@ -432,24 +432,41 @@ export function handleKeyDown(e: KeyboardEvent) {
       });
       return;
     }
-    // ⌘R — toggle run/stop for the active workspace's port-scripts (mirrors the
-    // rail's Run/Stop button, WorkspaceRail.tsx:840-857). No-op when there's no
-    // active workspace or no port-script to run. Always preventDefault: ⌘R is
-    // the webview's native reload shortcut and must never fire here.
+    // ⌘R — toggle run/stop for the active workspace's managed run scripts
+    // (mirrors the rail's Run/Stop control, WorkspaceRail.tsx). Down: run
+    // EVERY configured run entry concurrently, each in its own split pane
+    // (`runServers` — no more pick-one menu on the primary ⌘R path). Up:
+    // always stop everything. No-op with no active workspace or no run
+    // scripts configured. Always preventDefault: ⌘R is the webview's native
+    // reload shortcut and must never fire here.
     if (k === "r" || k === "R") {
       e.preventDefault();
       const ws = activeWorkspace(s);
       if (!ws) return;
-      const scripts = s.userScripts[ws.repoId ?? ""]?.scripts ?? [];
-      if (portScripts(scripts).length === 0) return;
-      const up = serversUp(ws, s.serverStatus);
-      (up ? stopServers(ws.id) : runServers(ws.id)).catch((e: unknown) => {
-        s.notify({
-          color: "var(--err)",
-          icon: "⚡",
-          headline: `Couldn't ${up ? "stop" : "start"} servers — ${ws.title}`,
-          sub: e instanceof Error ? e.message : String(e),
-          repo: repoLabel(ws.repoId),
+      const up = serversUp(ws.id, s.managedServers);
+      if (up) {
+        stopServers(ws.id).catch((err: unknown) => {
+          s.notify({
+            color: "var(--err)",
+            icon: "⚡",
+            headline: `Couldn't stop servers — ${ws.title}`,
+            sub: err instanceof Error ? err.message : String(err),
+            repo: repoLabel(ws.repoId),
+          });
+        });
+        return;
+      }
+      ensureAuroraConfigLoaded(ws.repoId).then(() => {
+        const entries = runCommands(ws.repoId);
+        if (entries.length === 0) return;
+        runServers(ws.id).catch((err: unknown) => {
+          s.notify({
+            color: "var(--err)",
+            icon: "⚡",
+            headline: `Couldn't start servers — ${ws.title}`,
+            sub: err instanceof Error ? err.message : String(err),
+            repo: repoLabel(ws.repoId),
+          });
         });
       });
       return;

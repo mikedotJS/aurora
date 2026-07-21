@@ -44,11 +44,16 @@ mock.module("../src/lib/teardown", () => ({
 }));
 
 let serversUpValue = false;
-const serversCalls: Array<{ fn: "run" | "stop"; wsId: string }> = [];
+const serversCalls: Array<{ fn: "run" | "stop"; wsId: string; scriptId?: string }> = [];
 let runServersImpl: (id: string) => Promise<void> = () => Promise.resolve();
 let stopServersImpl: (id: string) => Promise<void> = () => Promise.resolve();
+let runCustomImpl: (id: string) => Promise<void> = () => Promise.resolve();
+let runningScriptIdsValue: string[] = [];
 mock.module("../src/lib/servers", () => ({
   serversUp: () => serversUpValue,
+  runningScriptIds: () => runningScriptIdsValue,
+  runCommandId: (i: number) => `run:${i}`,
+  runCommandLabel: (rc: { command: string; name?: string }, i: number) => rc.name ?? rc.command ?? `cmd-${i + 1}`,
   runServers: (id: string) => {
     serversCalls.push({ fn: "run", wsId: id });
     return runServersImpl(id);
@@ -56,6 +61,18 @@ mock.module("../src/lib/servers", () => ({
   stopServers: (id: string) => {
     serversCalls.push({ fn: "stop", wsId: id });
     return stopServersImpl(id);
+  },
+  runOneRunCommand: (wsId: string, index: number) => {
+    serversCalls.push({ fn: "run", wsId, scriptId: `run:${index}` });
+    return runServersImpl(wsId);
+  },
+  runCustom: (wsId: string, scriptId: string) => {
+    serversCalls.push({ fn: "run", wsId, scriptId });
+    return runCustomImpl(wsId);
+  },
+  stopServer: (wsId: string, scriptId: string) => {
+    serversCalls.push({ fn: "stop", wsId, scriptId });
+    return stopServersImpl(wsId);
   },
   repoLabel: (repoId: string | null) => repoId?.split("/").filter(Boolean).pop() ?? "",
 }));
@@ -149,6 +166,10 @@ function seed(overrides: Record<string, unknown> = {}) {
       command: null,
       userScripts: {},
       serverStatus: {},
+      managedServers: {},
+      auroraConfigs: {},
+      portCollisions: [],
+      runMenuWsId: null,
       workspaceSettingsRepo: null,
       settingsOpen: false,
       notifs: [],
@@ -166,6 +187,22 @@ function seed(overrides: Record<string, unknown> = {}) {
  *  appear in the `repos` list (repos not yet in that list are silently dropped
  *  from the rail, even though the workspace count badge still counts them). */
 const REPO = { id: "/repo", root: "/repo", name: "repo", defaultBranch: "main" };
+
+/** A minimal `auroraConfigs` entry — Run/Stop visibility now comes from
+ *  aurora.json's `scripts.run` (an ORDERED ARRAY), not the legacy
+ *  port-scripts regex. Pass `custom` too to exercise the ▾ run menu's Custom
+ *  Scripts group. `run` here is keyed by a label purely for test readability
+ *  — it becomes each RunCommand's `name` so assertions can find rows by text;
+ *  the real store keys entries by index (`run:<i>`), not by this label. */
+function auroraRunConfig(
+  run: Record<string, { command?: string; cwd?: string }>,
+  custom: Record<string, { command?: string; cwd?: string }> = {},
+) {
+  const runList = Object.entries(run).map(([name, s]) => ({ command: s.command ?? "cmd", cwd: s.cwd, name }));
+  const customMap: Record<string, unknown> = {};
+  for (const [id, s] of Object.entries(custom)) customMap[id] = { command: s.command ?? "cmd", cwd: s.cwd };
+  return { version: 1, scripts: { setup: null, run: runList, custom: customMap, archive: null } };
+}
 
 // A microtask + macrotask flush for the async worktreeBacked effect.
 async function flush() {
@@ -185,6 +222,7 @@ beforeEach(() => {
   serversCalls.length = 0;
   runServersImpl = () => Promise.resolve();
   stopServersImpl = () => Promise.resolve();
+  runCustomImpl = () => Promise.resolve();
   confirmMock = mock(() => true);
   (globalThis as unknown as { confirm: unknown }).confirm = confirmMock;
   seed();
@@ -861,7 +899,12 @@ describe("WorkspaceContextBar", () => {
     const scripts = [
       { name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) next dev" }] },
     ];
-    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    seed({
+      workspaces: [w],
+      activeWs: "w1",
+      userScripts: { "/repo": { scripts, onEnter: null } },
+      auroraConfigs: { "/repo": auroraRunConfig({ web: {} }) },
+    });
     serversUpValue = false;
     const { container } = render(<WorkspaceContextBar />);
     const btn = container.querySelector(".aurora-ws-runtoggle") as HTMLButtonElement;
@@ -878,7 +921,12 @@ describe("WorkspaceContextBar", () => {
       { name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) next dev" }] },
       { name: "api", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((4000 + AURORA_PORT_OFFSET)) node server.js" }] },
     ];
-    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    seed({
+      workspaces: [w],
+      activeWs: "w1",
+      userScripts: { "/repo": { scripts, onEnter: null } },
+      auroraConfigs: { "/repo": auroraRunConfig({ web: {}, api: {} }) },
+    });
     serversUpValue = true;
     const { container } = render(<WorkspaceContextBar />);
     const btn = container.querySelector(".aurora-ws-runtoggle") as HTMLButtonElement;
@@ -891,7 +939,12 @@ describe("WorkspaceContextBar", () => {
   it("clicking Run calls runServers(ws.id) and does not notify on success", async () => {
     const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
     const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
-    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    seed({
+      workspaces: [w],
+      activeWs: "w1",
+      userScripts: { "/repo": { scripts, onEnter: null } },
+      auroraConfigs: { "/repo": auroraRunConfig({ web: {} }) },
+    });
     serversUpValue = false;
     const { container } = render(<WorkspaceContextBar />);
     fireEvent.click(container.querySelector(".aurora-ws-runtoggle")!);
@@ -903,7 +956,12 @@ describe("WorkspaceContextBar", () => {
   it("notifies 'Run servers failed' with the Error message when runServers rejects", async () => {
     const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
     const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
-    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    seed({
+      workspaces: [w],
+      activeWs: "w1",
+      userScripts: { "/repo": { scripts, onEnter: null } },
+      auroraConfigs: { "/repo": auroraRunConfig({ web: {} }) },
+    });
     serversUpValue = false;
     runServersImpl = () => Promise.reject(new Error("spawn failed"));
     const { container } = render(<WorkspaceContextBar />);
@@ -918,7 +976,12 @@ describe("WorkspaceContextBar", () => {
   it("notifies 'Stop servers failed' stringifying a non-Error rejection", async () => {
     const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
     const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
-    seed({ workspaces: [w], activeWs: "w1", userScripts: { "/repo": { scripts, onEnter: null } } });
+    seed({
+      workspaces: [w],
+      activeWs: "w1",
+      userScripts: { "/repo": { scripts, onEnter: null } },
+      auroraConfigs: { "/repo": auroraRunConfig({ web: {} }) },
+    });
     serversUpValue = true;
     stopServersImpl = () => Promise.reject("kill -9 refused");
     const { container } = render(<WorkspaceContextBar />);
@@ -936,4 +999,115 @@ describe("WorkspaceContextBar", () => {
   // with a null repoId is now safe (see the EMPTY_SCRIPTS regression above), but
   // the Run/Stop onClick still can't fire without a truthy repoId, so this
   // fallback stays dead either way.
+
+  // Regression (review finding #5, nit): choosing an entry from the Run menu
+  // (the ▾ dropdown, shown when a repo has >1 run script) used to leave the
+  // menu open — onToggleOne dispatched run/stop but never cleared
+  // runMenuWsId. It must close on selection, like any other menu.
+  describe("Run menu (▾ dropdown)", () => {
+    function seedTwoScripts() {
+      const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+      const scripts = [
+        { name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] },
+        { name: "api", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((4000 + AURORA_PORT_OFFSET)) y" }] },
+      ];
+      seed({
+        workspaces: [w],
+        activeWs: "w1",
+        userScripts: { "/repo": { scripts, onEnter: null } },
+        auroraConfigs: { "/repo": auroraRunConfig({ web: {}, api: {} }) },
+      });
+    }
+
+    it("opens on ▾ click, and closes on selecting an entry (runMenuWsId -> null, menu unmounts)", async () => {
+      seedTwoScripts();
+      serversUpValue = false;
+      runningScriptIdsValue = [];
+      const { container } = render(<WorkspaceContextBar />);
+
+      fireEvent.click(container.querySelector(".aurora-ws-runmenu-toggle")!);
+      expect(useStore.getState().runMenuWsId).toBe("w1");
+      const menu = container.querySelector('[role="menu"]');
+      expect(menu).toBeTruthy();
+
+      const items = within(menu as HTMLElement).getAllByRole("menuitem");
+      const webItem = items.find((el) => el.textContent?.includes("web"))!;
+      fireEvent.click(webItem);
+      await flush();
+
+      expect(useStore.getState().runMenuWsId).toBeNull();
+      expect(container.querySelector('[role="menu"]')).toBeNull();
+      expect(serversCalls).toEqual([{ fn: "run", wsId: "w1", scriptId: "run:0" }]);
+    });
+
+    it("closes the menu even when the underlying run/stop call rejects", async () => {
+      seedTwoScripts();
+      serversUpValue = false;
+      runningScriptIdsValue = [];
+      runServersImpl = () => Promise.reject(new Error("boom")); // shared impl backing the mocked runOneRunCommand()
+      const { container } = render(<WorkspaceContextBar />);
+
+      fireEvent.click(container.querySelector(".aurora-ws-runmenu-toggle")!);
+      const menu = container.querySelector('[role="menu"]');
+      const items = within(menu as HTMLElement).getAllByRole("menuitem");
+      fireEvent.click(items.find((el) => el.textContent?.includes("api"))!);
+      await flush();
+
+      expect(useStore.getState().runMenuWsId).toBeNull();
+      expect(container.querySelector('[role="menu"]')).toBeNull();
+    });
+
+    it("lists custom scripts under their own group and triggers runCustom (not runServer) on click", async () => {
+      const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+      const scripts = [{ name: "web", desc: "", split: false, tasks: [{ dir: ".", cmd: "PORT=$((3000 + AURORA_PORT_OFFSET)) x" }] }];
+      seed({
+        workspaces: [w],
+        activeWs: "w1",
+        userScripts: { "/repo": { scripts, onEnter: null } },
+        auroraConfigs: { "/repo": auroraRunConfig({ web: {} }, { lint: {}, seed: {} }) },
+      });
+      serversUpValue = false;
+      runningScriptIdsValue = [];
+      const { container } = render(<WorkspaceContextBar />);
+
+      // A single run entry alone wouldn't show the ▾ toggle, but custom
+      // entries do — the menu is the only door to them.
+      const toggle = container.querySelector(".aurora-ws-runmenu-toggle");
+      expect(toggle).toBeTruthy();
+      fireEvent.click(toggle!);
+
+      const menu = container.querySelector('[role="menu"]')!;
+      expect(menu.textContent).toContain("servers");
+      expect(menu.textContent).toContain("custom");
+      const items = within(menu as HTMLElement).getAllByRole("menuitem");
+      expect(items.map((el) => el.textContent)).toEqual(
+        expect.arrayContaining([expect.stringContaining("web"), expect.stringContaining("lint"), expect.stringContaining("seed")]),
+      );
+
+      fireEvent.click(items.find((el) => el.textContent?.includes("lint"))!);
+      await flush();
+      expect(useStore.getState().runMenuWsId).toBeNull();
+      expect(serversCalls).toEqual([{ fn: "run", wsId: "w1", scriptId: "lint" }]);
+    });
+
+    it("shows the ▾ menu (but no bare Run/Stop pill) when a repo has custom scripts and zero run entries", () => {
+      const w = makeWorkspace({ id: "w1", repoId: "/repo", env: { AURORA_PORT_OFFSET: "5" } });
+      seed({
+        workspaces: [w],
+        activeWs: "w1",
+        userScripts: { "/repo": { scripts: [], onEnter: null } },
+        auroraConfigs: { "/repo": auroraRunConfig({}, { seed: {} }) },
+      });
+      const { container } = render(<WorkspaceContextBar />);
+      expect(container.querySelector(".aurora-ws-runtoggle")).toBeNull();
+      const toggle = container.querySelector(".aurora-ws-runmenu-toggle");
+      expect(toggle).toBeTruthy();
+      fireEvent.click(toggle!);
+      const menu = container.querySelector('[role="menu"]')!;
+      // Only one category present — no redundant "servers"/"custom" group labels.
+      expect(menu.textContent).not.toContain("servers");
+      expect(within(menu as HTMLElement).getAllByRole("menuitem")).toHaveLength(1);
+      expect(menu.textContent).toContain("seed");
+    });
+  });
 });

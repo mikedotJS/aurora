@@ -10,6 +10,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { pty } from "../term/pty";
 import { useStore, findPane, workspaceOfPane } from "../state/store";
+import { ManagedServerPane } from "./ManagedServerPane";
 
 // Accent hex pairs [base, bright]. xterm renders on canvas (no CSS vars), so it
 // needs concrete colors; these mirror the blocks palette and track the accent.
@@ -45,7 +46,11 @@ const ZSH_INIT =
   "autoload -Uz add-zsh-hook 2>/dev/null && { add-zsh-hook preexec _aurora_pe; add-zsh-hook precmd _aurora_pc; }; " +
   "printf '\\e]7;file://%s%s\\a' \"${HOST:-localhost}\" \"$PWD\"; printf '\\e]1337;AuroraReady\\a'; clear\n";
 
-export function Terminal({ paneId, isActive }: { paneId: number; isActive: boolean }) {
+/** The ordinary shell-PTY path — spawns `$SHELL` via `pty_spawn` and renders
+ *  its output (blocks-mode text + the raw xterm overlay for full-screen
+ *  programs). Renamed from `Terminal` unchanged; `Terminal` below branches to
+ *  `ManagedServerPane` instead for a Servers-tab pane (managed-server-lifecycle). */
+function ShellTerminal({ paneId, isActive }: { paneId: number; isActive: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -365,4 +370,17 @@ export function Terminal({ paneId, isActive }: { paneId: number; isActive: boole
       }}
     />
   );
+}
+
+/**
+ * Public entry point rendered by Pane.tsx. Branches on `pane.serverId`
+ * (managed-server-lifecycle): a Servers-tab pane assigned to a managed
+ * process renders `ManagedServerPane` (subscribes to that process's own
+ * "server:data" stream); every other pane keeps the original shell-PTY path
+ * unchanged (`ShellTerminal`).
+ */
+export function Terminal({ paneId, isActive }: { paneId: number; isActive: boolean }) {
+  const serverId = useStore((s) => findPane(s, paneId)?.serverId ?? null);
+  if (serverId) return <ManagedServerPane paneId={paneId} serverId={serverId} />;
+  return <ShellTerminal paneId={paneId} isActive={isActive} />;
 }

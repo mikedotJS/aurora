@@ -9,8 +9,21 @@ import { pathResolve } from "../lib/sys";
 import { deleteWorkspace } from "../lib/teardown";
 import { statusOf, dotColor, dotPulses, statusLine } from "../lib/workspace";
 import { addRepoFromFolder } from "../lib/repo";
-import { readOffset, parseDerivedPorts, portScripts, serverUnits } from "../lib/ports";
-import { serversUp, runServers, stopServers, repoLabel } from "../lib/servers";
+import { readOffset, parseDerivedPorts, hasCollision } from "../lib/ports";
+import {
+  serversUp,
+  runServers,
+  stopServers,
+  runOneRunCommand,
+  runCustom,
+  stopServer,
+  runningScriptIds,
+  runCommandId,
+  runCommandLabel,
+  repoLabel,
+} from "../lib/servers";
+import { ensureAuroraConfigLoaded } from "../lib/auroraConfigStore";
+import { defaultAuroraConfig } from "../lib/auroraConfig";
 
 // --- Components ---
 
@@ -332,6 +345,63 @@ function StopIcon({ size = 10 }: { size?: number }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
       <rect x="6" y="6" width="12" height="12" rx="2.5" />
     </svg>
+  );
+}
+
+// Tiny uppercase divider inside the ▾ run menu — only rendered when the menu
+// mixes servers and custom scripts, so a single-category menu stays as plain
+// as it was before this split existed.
+function RunMenuGroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontFamily: "var(--sans)",
+        fontSize: 9.5,
+        letterSpacing: ".06em",
+        textTransform: "uppercase",
+        color: "var(--faint)",
+        padding: "4px 8px 2px",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+// One ▾ run-menu row — shared by Run Script commands and Custom entries; the
+// caller's `onClick` picks the right start call (runOneRunCommand vs.
+// runCustom), this component only renders the row and reports the click.
+function RunMenuRow({
+  label,
+  running,
+  onClick,
+}: {
+  label: string;
+  running: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        textAlign: "left",
+        padding: "5px 8px",
+        borderRadius: 5,
+        border: "none",
+        background: "transparent",
+        color: "var(--fg)",
+        cursor: "pointer",
+      }}
+    >
+      <span style={{ color: running ? "var(--ac)" : "var(--faint)" }}>{running ? "●" : "○"}</span>
+      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      <span style={{ color: "var(--faint)", fontSize: 10 }}>{running ? "Stop" : "Run"}</span>
+    </button>
   );
 }
 
@@ -683,8 +753,18 @@ export function WorkspaceContextBar() {
   const scripts = useStore((s): Script[] =>
     repoId ? (s.userScripts[repoId]?.scripts ?? EMPTY_SCRIPTS) : EMPTY_SCRIPTS,
   );
-  // Runtime-only liveness map (D3 revised) — must be before early returns.
-  const serverStatus = useStore((s) => s.serverStatus);
+  // Managed-server-lifecycle: aurora.json's Run Script (`scripts.run`, an
+  // ordered command list) is the real Run/Stop source of truth now (task
+  // 5.1) — the legacy `scripts`/`portScripts` above stay only for the
+  // informational derived-ports chip below.
+  const auroraConfig = useStore((s) => (repoId ? s.auroraConfigs[repoId] : undefined)) ?? defaultAuroraConfig();
+  const managedServers = useStore((s) => s.managedServers);
+  const portCollisions = useStore((s) => s.portCollisions);
+  const runMenuWsId = useStore((s) => s.runMenuWsId);
+
+  useEffect(() => {
+    if (repoId) ensureAuroraConfigLoaded(repoId);
+  }, [repoId]);
 
   if (!ws) return null;
 
@@ -697,12 +777,60 @@ export function WorkspaceContextBar() {
   // Derive concrete ports from generated scripts when possible — never fabricate.
   const derivedPorts = hasOffset ? parseDerivedPorts(scripts, offset) : [];
 
-  // Server toggle: visibility = at least one port-script exists; count = number of
-  // server units (honoring split: split script → 1 pane per task, concurrent).
-  // serverStatus feeds the revised D3 liveness check (alive/capturing → up, dead → down).
-  const servers = portScripts(scripts);
-  const units = serverUnits(scripts);
-  const up = serversUp(ws, serverStatus);
+  const runList = auroraConfig.scripts.run;
+  const customEntries = Object.entries(auroraConfig.scripts.custom ?? {});
+  const up = serversUp(ws.id, managedServers);
+  const runningIds = runningScriptIds(ws.id, managedServers);
+  const collision = hasCollision(portCollisions, ws.id);
+  const runMenuOpen = runMenuWsId === ws.id;
+  // The ▾ menu is the door to running/stopping ONE Run Script command (rather
+  // than all of them via the bare Run/Stop pill) OR triggering a Custom
+  // Script — reachable whenever either is possible. A single run command
+  // alone wouldn't add anything the bare pill doesn't already offer, so the
+  // menu only appears there once a custom script exists too.
+  const showRunMenuToggle = runList.length > 1 || customEntries.length > 0;
+
+  const onToggle = () =>
+    (up ? stopServers(ws.id) : runServers(ws.id)).catch((e: unknown) => {
+      useStore.getState().notify({
+        color: "var(--err)",
+        icon: "⚡",
+        headline: `Couldn't ${up ? "stop" : "start"} servers — ${ws.title}`,
+        sub: e instanceof Error ? e.message : String(e),
+        repo: repoLabel(ws.repoId),
+      });
+    });
+  // Run Script commands stop/start individually via `run:<i>`'s scriptId
+  // (runOneRunCommand to start, stopServer(ws.id, runCommandId(i)) to stop);
+  // Custom Scripts use their own map key with runCustom/stopServer. Both
+  // funnel through the same rustStopServer path either way (lib/servers.ts
+  // tracks both under the same managedServers map, keyed by managedServerId).
+  const onToggleRunCommand = (index: number, running: boolean, label: string) => {
+    useStore.getState().setRunMenuWsId(null); // close the Run menu on selection
+    const action = running ? stopServer(ws.id, runCommandId(index)) : runOneRunCommand(ws.id, index);
+    action.catch((e: unknown) => {
+      useStore.getState().notify({
+        color: "var(--err)",
+        icon: "⚡",
+        headline: `Couldn't ${running ? "stop" : "start"} ${label} — ${ws.title}`,
+        sub: e instanceof Error ? e.message : String(e),
+        repo: repoLabel(ws.repoId),
+      });
+    });
+  };
+  const onToggleCustom = (scriptId: string, running: boolean) => {
+    useStore.getState().setRunMenuWsId(null); // close the Run menu on selection
+    const action = running ? stopServer(ws.id, scriptId) : runCustom(ws.id, scriptId);
+    action.catch((e: unknown) => {
+      useStore.getState().notify({
+        color: "var(--err)",
+        icon: "⚡",
+        headline: `Couldn't ${running ? "stop" : "start"} ${scriptId} — ${ws.title}`,
+        sub: e instanceof Error ? e.message : String(e),
+        repo: repoLabel(ws.repoId),
+      });
+    });
+  };
 
   return (
     <div
@@ -836,31 +964,116 @@ export function WorkspaceContextBar() {
               </span>
             )}
           </div>
-          {/* Run/Stop toggle: pinned outside the scroll region, always reachable. */}
-          {servers.length > 0 && (
-            <button
-              type="button"
-              className={`aurora-ws-runtoggle${up ? " aurora-ws-runtoggle--up" : ""}`}
-              aria-label={up ? "Stop servers" : "Run servers"}
-              title={`${up ? "Stop" : "Run"} ${units.length} server${units.length !== 1 ? "s" : ""} (⌘R)`}
-              style={{ flex: "0 0 auto" }}
-              onClick={() => {
-                (up ? stopServers(ws.id) : runServers(ws.id)).catch((e: unknown) => {
-                  useStore.getState().notify({
+          {/* Run/Stop + ▾ run menu: pinned outside the scroll region, always
+              reachable. The bare Run/Stop pill launches/stops every server
+              (⌘R); the ▾ menu is the one place to run/stop a single server OR
+              trigger a custom script on demand — shown whenever either is
+              possible, even with zero/one run entries (custom-only repos still
+              need a way in). */}
+          {(runList.length > 0 || customEntries.length > 0) && (
+            <div style={{ position: "relative", flex: "0 0 auto", display: "flex", alignItems: "center", gap: 4 }}>
+              {runList.length > 0 && (
+                <button
+                  type="button"
+                  className={`aurora-ws-runtoggle${up ? " aurora-ws-runtoggle--up" : ""}`}
+                  aria-label={up ? "Stop servers" : "Run servers"}
+                  title={`${up ? "Stop" : "Run"} ${runList.length} server${runList.length !== 1 ? "s" : ""} (⌘R)`}
+                  onClick={onToggle}
+                >
+                  <span className="aurora-ws-runtoggle__icon" aria-hidden>
+                    {up ? <StopIcon /> : <PlayIcon />}
+                  </span>
+                  {up ? "Stop" : "Run"}
+                </button>
+              )}
+              {showRunMenuToggle && (
+                <button
+                  type="button"
+                  className="aurora-ws-runmenu-toggle"
+                  aria-label="Choose a server or custom script to run"
+                  aria-expanded={runMenuOpen}
+                  title={customEntries.length > 0 ? "Run menu — servers & custom scripts" : "Run menu — choose a server"}
+                  onClick={() => useStore.getState().setRunMenuWsId(runMenuOpen ? null : ws.id)}
+                  style={{
+                    flex: "0 0 auto",
+                    color: "var(--acd)",
+                    border: "1px solid var(--line)",
+                    borderRadius: 5,
+                    background: "transparent",
+                    padding: "2px 5px",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                  }}
+                >
+                  ▾
+                </button>
+              )}
+              {collision && (
+                <span
+                  className="aurora-ws-collision"
+                  title="Port collision detected — see notifications"
+                  style={{
+                    flex: "0 0 auto",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    padding: "2px 7px",
+                    borderRadius: 6,
+                    fontFamily: "var(--sans)",
+                    fontSize: 10,
                     color: "var(--err)",
-                    icon: "⚡",
-                    headline: `Couldn't ${up ? "stop" : "start"} servers — ${ws.title}`,
-                    sub: e instanceof Error ? e.message : String(e),
-                    repo: repoLabel(ws.repoId),
-                  });
-                });
-              }}
-            >
-              <span className="aurora-ws-runtoggle__icon" aria-hidden>
-                {up ? <StopIcon /> : <PlayIcon />}
-              </span>
-              {up ? "Stop" : "Run"}
-            </button>
+                    border: "1px solid var(--err)",
+                    background: "color-mix(in oklab, var(--err) 12%, transparent)",
+                  }}
+                >
+                  ⚠ collision
+                </span>
+              )}
+              {runMenuOpen && showRunMenuToggle && (
+                <div
+                  role="menu"
+                  aria-label="Run menu"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 4px)",
+                    right: 0,
+                    zIndex: 10,
+                    minWidth: 180,
+                    display: "flex",
+                    flexDirection: "column",
+                    background: "var(--bar)",
+                    border: "1px solid var(--line)",
+                    borderRadius: 8,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+                    padding: 4,
+                    fontFamily: "var(--sans)",
+                    fontSize: 11.5,
+                  }}
+                >
+                  {runList.length > 0 && (
+                    <>
+                      {customEntries.length > 0 && <RunMenuGroupLabel>servers</RunMenuGroupLabel>}
+                      {runList.map((rc, i) => {
+                        const id = runCommandId(i);
+                        const running = runningIds.includes(id);
+                        const label = runCommandLabel(rc, i);
+                        return <RunMenuRow key={id} label={label} running={running} onClick={() => onToggleRunCommand(i, running, label)} />;
+                      })}
+                    </>
+                  )}
+                  {customEntries.length > 0 && (
+                    <>
+                      {runList.length > 0 && <div style={{ borderTop: "1px solid var(--line)", margin: "4px 2px" }} />}
+                      {runList.length > 0 && <RunMenuGroupLabel>custom</RunMenuGroupLabel>}
+                      {customEntries.map(([id]) => {
+                        const running = runningIds.includes(id);
+                        return <RunMenuRow key={id} label={id} running={running} onClick={() => onToggleCustom(id, running)} />;
+                      })}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           )}
         </>
       )}

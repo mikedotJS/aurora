@@ -6,6 +6,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../state/store";
 import { gitRepoInfo } from "./sys";
+import { checkMigrationOffer } from "./auroraConfigStore";
 
 export type AddRepoResult =
   | { ok: true; root: string; name: string }
@@ -27,5 +28,7 @@ export async function addRepoFromFolder(): Promise<AddRepoResult> {
   // main_root is the canonical key (a worktree resolves to its primary repo).
   const root = info.main_root || info.root;
   useStore.getState().addRepo({ root, name: info.name, defaultBranch: info.default_branch });
+  // Repo-open migration offer (managed-server-lifecycle task 6.2). Fire-and-forget.
+  void checkMigrationOffer(root);
   return { ok: true, root, name: info.name };
 }
