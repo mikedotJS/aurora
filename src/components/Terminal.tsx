@@ -9,6 +9,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { pty } from "../term/pty";
+import { ZSH_INIT } from "../term/zshInit";
 import { useStore, findPane, workspaceOfPane } from "../state/store";
 import { ManagedServerPane } from "./ManagedServerPane";
 
@@ -38,13 +39,6 @@ function xtermTheme(accent: string) {
     brightBlue: "#9ab8ff", brightMagenta: "#d2b8ff", brightCyan: acBright, brightWhite: "#f4f6fa",
   };
 }
-
-const ZSH_INIT =
-  "PROMPT='' RPROMPT='' PROMPT_EOL_MARK=''; " +
-  "_aurora_pe(){ printf '\\e]133;C\\a'; }; " +
-  "_aurora_pc(){ local e=$?; printf '\\e]133;D;%s\\a' \"$e\"; printf '\\e]7;file://%s%s\\a' \"${HOST:-localhost}\" \"$PWD\"; }; " +
-  "autoload -Uz add-zsh-hook 2>/dev/null && { add-zsh-hook preexec _aurora_pe; add-zsh-hook precmd _aurora_pc; }; " +
-  "printf '\\e]7;file://%s%s\\a' \"${HOST:-localhost}\" \"$PWD\"; printf '\\e]1337;AuroraReady\\a'; clear\n";
 
 /** The ordinary shell-PTY path — spawns `$SHELL` via `pty_spawn` and renders
  *  its output (blocks-mode text + the raw xterm overlay for full-screen
