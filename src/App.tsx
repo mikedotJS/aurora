@@ -37,6 +37,7 @@ import { maybeFireHook } from "./lib/scripts";
 import { checkMigrationOffer } from "./lib/auroraConfigStore";
 import { startNotificationPoller } from "./lib/notifications";
 import { checkForUpdates } from "./lib/updater";
+import { startConfigWatch } from "./lib/configWatch";
 import { keyPresent } from "./lib/keychain";
 import { BP_NARROW_PX } from "./lib/useMediaQuery";
 
@@ -140,6 +141,17 @@ export default function App() {
         if (useStore.getState().settings.introSeen) document.getElementById("aurora-root")?.focus();
       }, 0);
     })();
+  }, []);
+
+  // Re-read a repo's aurora.json when it changes on disk (Rust fs-watch → the
+  // `aurora:config-changed` event), so an external edit takes effect without a
+  // relaunch. Registered once; the watch set itself is populated lazily by
+  // ensureAuroraConfigLoaded as repos' configs are read.
+  useEffect(() => {
+    const unlisten = startConfigWatch();
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
   }, []);
 
   // global keyboard

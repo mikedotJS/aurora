@@ -22,6 +22,7 @@ import {
   type ConfigSource,
 } from "./auroraConfig";
 import { repoScriptsToAuroraConfig } from "./scriptsMigration";
+import { requestConfigWatch } from "./configWatch";
 
 const inFlight = new Map<string, Promise<AuroraConfig>>();
 /** The source the cached config for a root last resolved from — used to offer
@@ -48,6 +49,10 @@ export function isUnmigrated(root: string | null): boolean {
  */
 export function ensureAuroraConfigLoaded(root: string | null): Promise<AuroraConfig> {
   if (!root) return Promise.resolve(defaultAuroraConfig());
+  // Watch this root's aurora.json so a later on-disk edit re-reads without a relaunch. Called on
+  // every load (including cache hits) but deduped in requestConfigWatch, so a root first loaded
+  // before the watcher was reachable still gets registered. Fire-and-forget — never blocks the load.
+  requestConfigWatch(root);
   const cached = useStore.getState().auroraConfigs[root];
   if (cached) return Promise.resolve(cached);
   const existing = inFlight.get(root);

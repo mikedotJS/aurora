@@ -36,6 +36,9 @@ tauri-plugin-dialog = "2.7.1"
 # `lib.rs`'s `#[cfg(feature = "e2e")]` registration).
 tauri-plugin-wdio-webdriver = { version = "1", optional = true }
 libc = "0.2"
+# Filesystem watcher for `aurora.json` (config_watch.rs) — re-read a repo's
+# committed config on disk edit without an app relaunch.
+notify = "6"
 
 [features]
 default = []

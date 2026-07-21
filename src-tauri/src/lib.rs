@@ -1,4 +1,5 @@
 mod claude;
+mod config_watch;
 mod git;
 mod glab;
 mod jira;
@@ -33,6 +34,7 @@ pub fn run() {
     let app = builder
         .manage(pty::PtyManager::default())
         .manage(server::ServerManager::default())
+        .manage(config_watch::ConfigWatcherState::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -46,6 +48,7 @@ pub fn run() {
             server::server_status,
             server::server_stop,
             server::server_probe,
+            config_watch::watch_aurora_config,
             sys::list_dir,
             sys::read_text_file,
             sys::write_text_file,
