@@ -164,6 +164,19 @@ pub fn write_text_file(root: String, path: String, content: String) -> Result<()
     if !parent_real.starts_with(&root_real) {
         return Err("refusing to write outside the workspace".to_string());
     }
+    // The parent check resolves a symlinked DIRECTORY component, but `std::fs::write`
+    // still follows a symlink at the FINAL component — so a target like
+    // `<ws>/leaklink` whose leaf is a symlink to an outside file (a tracked symlink
+    // in a cloned repo, pointed at by a committed aurora.json `envFiles` entry)
+    // would be written straight through, overwriting that outside file. Reject any
+    // existing leaf symlink. `symlink_metadata` does NOT follow the link, so this
+    // sees the link itself; a missing target (the normal fresh-worktree case) and a
+    // plain existing file both pass through.
+    if let Ok(meta) = std::fs::symlink_metadata(&target) {
+        if meta.file_type().is_symlink() {
+            return Err("refusing to write through a symlink".to_string());
+        }
+    }
     std::fs::write(&target, content).map_err(|e| e.to_string())
 }
 
@@ -473,5 +486,64 @@ mod tests {
     fn path_resolve_nonexistent_path_falls_back_to_expanded_input() {
         let p = "/definitely/does/not/exist/aurora-test-path";
         assert_eq!(path_resolve(p.to_string()), p);
+    }
+
+    // ── write_text_file containment ──────────────────────────────────────────
+
+    #[test]
+    fn write_text_file_writes_inside_the_workspace() {
+        let ws = TempDir::new("wtf-ok");
+        let target = ws.path().join("apps/api/.env.local");
+        write_text_file(
+            ws.path().to_string_lossy().to_string(),
+            target.to_string_lossy().to_string(),
+            "PORT=3010\n".into(),
+        )
+        .expect("write should succeed inside the workspace");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "PORT=3010\n");
+    }
+
+    #[test]
+    fn write_text_file_rejects_a_parent_dir_symlink_escape() {
+        let ws = TempDir::new("wtf-dirlink");
+        let outside = TempDir::new("wtf-dirlink-outside");
+        // ws/link -> outside ; a write to ws/link/secret resolves its PARENT
+        // outside the workspace, which the existing parent check already blocks.
+        std::os::unix::fs::symlink(outside.path(), ws.path().join("link")).unwrap();
+        let target = ws.path().join("link/secret");
+        let res = write_text_file(
+            ws.path().to_string_lossy().to_string(),
+            target.to_string_lossy().to_string(),
+            "PWNED\n".into(),
+        );
+        assert!(res.is_err(), "a directory-symlink escape must be refused");
+        assert!(!outside.path().join("secret").exists(), "nothing may be written outside");
+    }
+
+    #[test]
+    fn write_text_file_rejects_a_leaf_symlink_escape() {
+        // The real attack a committed aurora.json can stage: a tracked symlink
+        // whose FINAL component points at a file outside the worktree. The
+        // parent (`ws`) canonicalizes cleanly inside the workspace, so only a
+        // check on the target itself catches this. `std::fs::write` follows a
+        // leaf symlink, so without the guard this overwrites the outside file.
+        let ws = TempDir::new("wtf-leaflink");
+        let outside = TempDir::new("wtf-leaflink-outside");
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, "original\n").unwrap();
+        std::os::unix::fs::symlink(&secret, ws.path().join("leaklink")).unwrap();
+
+        let target = ws.path().join("leaklink");
+        let res = write_text_file(
+            ws.path().to_string_lossy().to_string(),
+            target.to_string_lossy().to_string(),
+            "PWNED-VIA-ENVFILES\n".into(),
+        );
+        assert!(res.is_err(), "a leaf-symlink escape must be refused");
+        assert_eq!(
+            std::fs::read_to_string(&secret).unwrap(),
+            "original\n",
+            "the outside file must be untouched",
+        );
     }
 }
